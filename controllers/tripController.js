@@ -440,6 +440,11 @@ export const createTrip = async (req, res) => {
       { $set: { tripNo: trip.tripNumber, status: 'dispatched' } }
     );
 
+    // Propagate driver assignment to Vehicle so the GPS map can populate it
+    if (truckId && driver) {
+      await Vehicle.findByIdAndUpdate(truckId, { driver: new mongoose.Types.ObjectId(driver) });
+    }
+
     // --- Automatic Manifest / ACE-ACI Integration ---
     try {
       const shipmentData = existingOrders.map(order => ({
@@ -1165,6 +1170,11 @@ export const updateTrip = async (req, res) => {
     trip.updatedBy = req.user._id;
 
     await trip.save();
+
+    // Keep Vehicle.driver in sync when driver or truck changes
+    if (trip.truck && trip.driver) {
+      await Vehicle.findByIdAndUpdate(trip.truck, { driver: trip.driver });
+    }
 
     // Populate trip for email sending
     await trip.populate([
@@ -2361,6 +2371,11 @@ export const completeTrip = async (req, res) => {
       trip.actualEndDate = new Date();
       trip.updatedBy = driverId;
       await trip.save();
+
+      // Clear driver from Vehicle — truck is now free
+      if (trip.truck) {
+        await Vehicle.findByIdAndUpdate(trip.truck, { $unset: { driver: 1 } });
+      }
 
       // Update all orders in trip to 'completed' status
       if (trip.orders && trip.orders.length > 0) {

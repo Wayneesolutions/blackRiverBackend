@@ -3,6 +3,9 @@ import { Expense } from "../../models/hr/expenseModel.js";
 import { Payroll } from "../../models/hr/payrollSchemaModel.js";
 import { Settlement } from "../../models/hr/settlementModel.js";
 import { User } from "../../models/driver/userModel.js";
+import FuelReport from "../../models/driver/fuelReportsModel.js";
+import { GeneralRepair } from "../../models/fleet/generalRepairModel.js";
+import { FleetInvoice } from "../../models/driver/fleetInvoiceModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
 
@@ -93,11 +96,22 @@ export const getAccountsDashboard = async (req, res) => {
 
     // === EXPENSES ===
     const expenses = await Expense.find(expenseFilter).lean();
-    const totalExpenses = expenses.reduce((sum, exp) => sum + normalizeAmount(exp.amount), 0);
-    
-    // Vendor Payment: Sum of all expenses (assuming all expenses are vendor-related)
-    // You can filter by expense.type if you have specific vendor types
-    const vendorPayment = totalExpenses;
+    const directExpenses = expenses.reduce((sum, exp) => sum + normalizeAmount(exp.amount), 0);
+
+    // Include the same additional expense sources as the Finance Report so both totals agree
+    const fuelReports = await FuelReport.find({ ...baseFilter, status: { $in: ['approved', 'pending'] } }).lean();
+    const fuelCost = fuelReports.reduce((sum, f) => sum + normalizeAmount(f.totalCost || f.amount || 0), 0);
+
+    const repairs = await GeneralRepair.find({ ...baseFilter, amount: { $gt: 0 } }).lean();
+    const repairCost = repairs.reduce((sum, r) => sum + normalizeAmount(r.amount || 0), 0);
+
+    const paidFleetInvoices = await FleetInvoice.find({ ...baseFilter, status: 'paid' }).lean();
+    const fleetInvoiceCost = paidFleetInvoices.reduce((sum, fi) => sum + normalizeAmount(fi.amount || 0), 0);
+
+    const totalExpenses = directExpenses + fuelCost + repairCost + fleetInvoiceCost;
+
+    // Vendor Payment: direct expenses only (not fuel/repair which are fleet costs)
+    const vendorPayment = directExpenses;
 
     // === PAYROLL ===
     const payrolls = await Payroll.find(payrollFilter)
