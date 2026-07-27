@@ -1,0 +1,536 @@
+import { User } from "../models/driver/userModel.js";
+import { hashPassword } from "../services/bcrypt.js";
+import { checkRoleCreationPermission, getAllowedRoles } from "../utils/subscriptionPermissions.js";
+import { startTrial } from "../utils/trialUtils.js";
+import jwt from "jsonwebtoken";
+
+const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
+
+// Helper function to generate signed URL for S3 images
+const generateSignedUrl = async (url) => {
+  if (!url || (!url.includes('s3.amazonaws.com') && !url.includes('.s3.'))) {
+    return url; // Return as-is if not an S3 URL
+  }
+
+  try {
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+    const { s3 } = await import("../config/awsConfig.js");
+    
+    const cleanUrl = url.split('?')[0].split('#')[0];
+    const urlObj = new URL(cleanUrl);
+    let bucketName = process.env.AWS_S3_BUCKET_NAME;
+    let key = decodeURIComponent(urlObj.pathname.substring(1));
+
+    if (urlObj.hostname.includes('.s3.')) {
+      bucketName = urlObj.hostname.split('.s3.')[0];
+      key = decodeURIComponent(urlObj.pathname.substring(1));
+    } else if (urlObj.hostname === 's3.amazonaws.com' || urlObj.hostname.includes('s3-')) {
+      const pathParts = urlObj.pathname.split('/').filter(p => p);
+      bucketName = pathParts[0];
+      key = pathParts.slice(1).map(p => decodeURIComponent(p)).join('/');
+    }
+
+    // Clean key from query parameters
+    if (key.includes('?')) key = key.split('?')[0];
+    if (key.includes('&')) key = key.split('&')[0];
+
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      ResponseContentType: url.toLowerCase().includes('.png') ? 'image/png' : 
+                          url.toLowerCase().includes('.gif') ? 'image/gif' : 
+                          url.toLowerCase().includes('.webp') ? 'image/webp' : 
+                          'image/jpeg',
+    });
+
+    const signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+    return signedUrl;
+  } catch (error) {
+    console.error('Error generating signed URL:', error);
+    return url; // Return original URL if signing fails
+  }
+};
+
+
+// Public registration endpoint (no auth required)
+export const registerAdmin = async (req, res) => {
+  try {
+    const { 
+      name, 
+      email, 
+      password,
+      phone,
+      country,
+      state,
+      city,
+      address,
+      companyName,
+      policies
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Name, email, and password are required" 
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Please provide a valid email address" 
+      });
+    }
+
+    // Validate password strength
+    if (password.length < 8) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Password must be at least 8 characters long" 
+      });
+    }
+
+    // Check if admin already exists
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "An account with this email already exists" 
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await hashPassword(password);
+
+    // Get coordinates from address if provided
+    let coordinates = { latitude: null, longitude: null };
+    if (address) {
+      try {
+        const { getCoordinatesFromAddress } = await import("../services/googlemap.js");
+        coordinates = await getCoordinatesFromAddress(address);
+      } catch (geoError) {
+        console.error("Geocoding error:", geoError);
+        // Continue without coordinates if geocoding fails
+      }
+    }
+
+    // Generate internalId
+    const internalId = `ADMIN-${Date.now()}`;
+
+    // Create new admin user
+    const adminData = {
+      name,
+      email,
+      phone: phone || undefined,
+      country: country || undefined,
+      state: state || undefined,
+      city: city || undefined,
+      role: 'admin', // Always create as admin
+      password: hashedPassword,
+      status: 'active',
+      policies: policies || undefined,
+      joinDate: new Date(),
+      internalId,
+      location: address ? {
+        address,
+        longitude: coordinates.longitude,
+        latitude: coordinates.latitude
+      } : undefined
+    };
+
+    const admin = new User(adminData);
+    await admin.save();
+
+    // Start 7-day free trial for admin
+    try {
+      await startTrial(admin._id);
+      console.log(`✅ Trial started for new admin: ${admin.email}`);
+    } catch (trialError) {
+      console.error('Error starting trial for new admin:', trialError);
+      // Don't fail admin creation if trial start fails
+    }
+
+    // Generate JWT token for immediate login
+    const token = jwt.sign(
+      { id: admin._id, role: admin.role },
+      JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Admin account created successfully. Your 7-day free trial has started!",
+      token: token,
+      data: {
+        id: admin._id,
+        name: admin.name,
+        email: admin.email,
+        phone: admin.phone,
+        role: admin.role,
+        status: admin.status,
+        internalId: admin.internalId,
+        joinDate: admin.joinDate
+      },
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "An error occurred during registration. Please try again."
+    });
+  }
+};
+
+// Protected endpoint for creating admin (requires auth)
+export const createAdmin = async (req, res) => {
+  try {
+    const { 
+      name, 
+      email, 
+      password,
+      phone,
+      country,
+      state,
+      city,
+      address,
+      internalId,
+      company,
+      status = 'active',
+      policies,
+      role = 'admin' // Default role is 'admin', but can create other roles if permitted
+    } = req.body;
+
+    // Get the requesting user (admin creating another user)
+    const requestingAdminId = req.user._id;
+    const requestingUser = await User.findById(requestingAdminId);
+
+    // If requesting user is not superadmin, check subscription permissions
+    if (requestingUser.role !== 'superadmin') {
+      const permissionCheck = await checkRoleCreationPermission(requestingAdminId, role);
+      
+      if (!permissionCheck.allowed) {
+        return res.status(403).json({
+          success: false,
+          message: permissionCheck.reason || "You don't have permission to create users with this role"
+        });
+      }
+    }
+
+    // Check if admin already exists
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ success: false, message: "Admin with this email already exists" });
+    }
+
+    // Check if internalId already exists
+    if (internalId) {
+      const existingId = await User.findOne({ internalId });
+      if (existingId) {
+        return res.status(400).json({ success: false, message: "Internal ID already exists" });
+      }
+    }
+
+    // Hash password
+    const hashedPassword = await hashPassword(password);
+
+    // Get coordinates from address if provided
+    let coordinates = { latitude: null, longitude: null };
+    if (address) {
+      const { getCoordinatesFromAddress } = await import("../services/googlemap.js");
+      coordinates = await getCoordinatesFromAddress(address);
+    }
+
+    // Create new admin/user
+    const adminData = {
+      name,
+      email,
+      phone,
+      country,
+      state,
+      city,
+      role: role, // Use the role from request (validated above)
+      password: hashedPassword,
+      status,
+      policies,
+      joinDate: new Date(),
+      internalId: internalId || `${role.toUpperCase()}-${Date.now()}`,
+      location: {
+        address,
+        longitude: coordinates.longitude,
+        latitude: coordinates.latitude
+      }
+    };
+
+    // Add company reference if provided
+    if (company) {
+      adminData.company = company;
+    }
+
+    const admin = new User(adminData);
+    await admin.save();
+
+    // Start 7-day free trial for admin role (not superadmin)
+    if (role === 'admin') {
+      try {
+        await startTrial(admin._id);
+        console.log(`✅ Trial started for new admin: ${admin.email}`);
+      } catch (trialError) {
+        console.error('Error starting trial for new admin:', trialError);
+        // Don't fail admin creation if trial start fails
+      }
+    }
+
+    // Populate company data for response
+    await admin.populate('company', 'companyName companyCode address contactEmail contactPhone logoUrl');
+
+    // Generate signed URL for company logo if it exists
+    const adminObj = admin.toObject();
+    if (adminObj.company && adminObj.company.logoUrl) {
+      try {
+        adminObj.company.logoUrl = await generateSignedUrl(adminObj.company.logoUrl);
+      } catch (error) {
+        console.error('Error generating signed URL for company logo:', error);
+        // Keep the original URL if signing fails
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Admin created successfully",
+      data: {
+        id: adminObj._id,
+        name: adminObj.name,
+        email: adminObj.email,
+        phone: adminObj.phone,
+        role: adminObj.role,
+        status: adminObj.status,
+        internalId: adminObj.internalId,
+        company: adminObj.company,
+        joinDate: adminObj.joinDate
+      },
+    });
+  } catch (error) {
+    console.error('Create admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "An error occurred. Please try again."
+    });
+  }
+};
+
+// Get allowed roles for admin
+export const getAllowedRolesForAdmin = async (req, res) => {
+  try {
+    const adminId = req.user._id;
+    const roles = await getAllowedRoles(adminId);
+    res.json({ success: true, data: roles });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Get All Admins
+export const getAllAdmins = async (req, res) => {
+  try {
+    const { search, status, page = 1, limit = 100 } = req.query;
+    
+    // Build filter - only get users with role 'admin'
+    const filter = { role: 'admin' };
+    
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+    
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { internalId: { $regex: search, $options: 'i' } },
+      ];
+    }
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Get admins with populated company data
+    const admins = await User.find(filter)
+      .populate('company', 'companyName companyCode address contactEmail contactPhone logoUrl')
+      .select("-password")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    // Generate signed URLs for company logos
+    const adminsWithSignedUrls = await Promise.all(
+      admins.map(async (admin) => {
+        const adminObj = admin.toObject();
+        
+        // Generate signed URL for company logo if it exists
+        if (adminObj.company && adminObj.company.logoUrl) {
+          try {
+            adminObj.company.logoUrl = await generateSignedUrl(adminObj.company.logoUrl);
+          } catch (error) {
+            console.error('Error generating signed URL for company logo:', error);
+            // Keep the original URL if signing fails
+          }
+        }
+        
+        return adminObj;
+      })
+    );
+    
+    const total = await User.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      message: "Admin list retrieved successfully",
+      data: adminsWithSignedUrls,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalAdmins: total,
+        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+        hasPrevPage: parseInt(page) > 1
+      }
+    });
+  } catch (err) {
+    res.status(500).json({success:false, message: "Server error", error: err.message });
+  }
+};
+
+// ✅ Update Admin
+export const updateAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      name, 
+      email, 
+      phone,
+      country,
+      state,
+      city,
+      address,
+      status,
+      policies,
+      company,
+      password
+    } = req.body;
+
+    const admin = await User.findById(id);
+    if (!admin) {
+      return res.status(404).json({success:false, message: "Admin not found" });
+    }
+
+    // Check if email is being changed and if it's already taken
+    if (email && email !== admin.email) {
+      const emailExists = await User.findOne({ email, _id: { $ne: id } });
+      if (emailExists) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Email already exists for another user" 
+        });
+      }
+    }
+
+    // Get coordinates from address if provided and changed
+    let coordinates = { latitude: null, longitude: null };
+    if (address && address !== admin.location?.address) {
+      try {
+        const { getCoordinatesFromAddress } = await import("../services/googlemap.js");
+        coordinates = await getCoordinatesFromAddress(address);
+      } catch (geoError) {
+        console.error("Geocoding error:", geoError);
+        // Continue without coordinates if geocoding fails
+      }
+    } else if (admin.location) {
+      coordinates = {
+        latitude: admin.location.latitude,
+        longitude: admin.location.longitude
+      };
+    }
+
+    // Hash password if provided
+    let hashedPassword = admin.password;
+    if (password) {
+      hashedPassword = await hashPassword(password);
+    }
+
+    // Prepare update data
+    const updateData = {
+      name,
+      email,
+      phone,
+      country,
+      state,
+      city,
+      status,
+      policies,
+      password: hashedPassword,
+      location: {
+        address: address || admin.location?.address,
+        longitude: coordinates.longitude,
+        latitude: coordinates.latitude
+      }
+    };
+
+    // Add company if provided
+    if (company) {
+      updateData.company = company;
+    }
+
+    // Remove undefined values
+    Object.keys(updateData).forEach(key => {
+      if (updateData[key] === undefined) {
+        delete updateData[key];
+      }
+    });
+
+    // Use updateOne to avoid full document validation issues
+    await User.updateOne(
+      { _id: id },
+      { $set: updateData }
+    );
+
+    // Fetch updated admin with populated company
+    const updatedAdmin = await User.findById(id)
+      .populate('company', 'companyName companyCode address contactEmail contactPhone logoUrl')
+      .select("-password");
+
+    // Generate signed URL for company logo if it exists
+    const adminObj = updatedAdmin.toObject();
+    if (adminObj.company && adminObj.company.logoUrl) {
+      try {
+        adminObj.company.logoUrl = await generateSignedUrl(adminObj.company.logoUrl);
+      } catch (error) {
+        console.error('Error generating signed URL for company logo:', error);
+        // Keep the original URL if signing fails
+      }
+    }
+
+    res.json({
+      success: true, 
+      message: "Admin updated successfully", 
+      data: adminObj 
+    });
+  } catch (err) {
+    console.error('Error updating admin:', err);
+    res.status(500).json({success:false, message: "Server error", error: err.message });
+  }
+};
+
+// ✅ Delete Admin
+export const deleteAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const admin = await User.findByIdAndDelete(id);
+    if (!admin) return res.status(404).json({success:false, message: "Admin not found" });
+
+    res.json({success:true, message: "Admin deleted successfully" });
+  } catch (err) {
+    res.status(500).json({success:false, message: "Server error", error: err.message });
+  }
+};
