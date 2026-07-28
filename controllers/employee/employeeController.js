@@ -2389,11 +2389,14 @@ export const importEmployees = async (req, res) => {
       const row = mapRow(rows[i], fieldMap);
       const rowNum = i + 2;
 
-      const name = row.name || '';
+      const firstName = row.first_name || '';
+      const lastName = row.last_name || '';
+      const name = row.name || (firstName || lastName ? `${firstName} ${lastName}`.trim() : '');
       const email = (row.email || '').toLowerCase();
       const role = row.role || 'employee';
       const phone = row.phone || '';
       const department = row.department || '';
+      const csvEmployeeId = row.employee_id || '';
 
       if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required' }); continue; }
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -2411,7 +2414,7 @@ export const importEmployees = async (req, res) => {
       const tempPassword = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
 
       const timestamp = Date.now().toString().slice(-6);
-      const internalId = `EMP-${timestamp}-${i}`;
+      const internalId = csvEmployeeId || `EMP-${timestamp}-${i}`;
 
       try {
         const employee = new User({
