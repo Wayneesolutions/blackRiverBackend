@@ -1552,7 +1552,8 @@ export const importVehicles = async (req, res) => {
       const model = row.model || '';
       const year = row.year || '';
       const vinNumber = row.vin || '';
-      const internalId = row.internal_id || `TRK-${Date.now()}-${i}`;
+      const unitNumber = row.unit_number || '';
+      const internalId = row.internal_id || unitNumber || `TRK-${Date.now()}-${i}`;
       const type = row.type || '';
       const status = row.status || 'In Service';
       const ownership = row.ownership || 'COMPANY ASSET';
@@ -1576,6 +1577,7 @@ export const importVehicles = async (req, res) => {
           model: model || undefined,
           year: year ? String(year) : undefined,
           vinNumber: vinNumber || undefined,
+          unitNumber: unitNumber || undefined,
           internalId,
           type: type || undefined,
           status,

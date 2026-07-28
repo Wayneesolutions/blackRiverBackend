@@ -1398,7 +1398,7 @@ export const importTrailers = async (req, res) => {
       const row = mapRow(rows[i], fieldMap);
       const rowNum = i + 2;
 
-      const trailerNumber = row.trailer_number || '';
+      const trailerNumber = row.trailer_number || row.unit_number || '';
       const plateNumber = row.plate_number || `PLT-${Date.now()}-${i}`;
       const make = row.make || '';
       const model = row.model || '';
