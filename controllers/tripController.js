@@ -2334,6 +2334,89 @@ export const approveTripDocuments = async (req, res) => {
   }
 };
 
+// Reject Trip Documents - dispatcher rejects submitted documents and requests re-upload
+export const rejectTripDocuments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const rejectorId = req.user._id;
+    const companyId = getUserCompanyId(req.user);
+
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'A rejection reason is required.'
+      });
+    }
+
+    if (!['admin', 'superadmin', 'dispatcher'].includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only dispatchers and administrators can reject trip documents.'
+      });
+    }
+
+    const tripFilter = { _id: id };
+    if (companyId && req.user.role !== 'superadmin') {
+      tripFilter.company = companyId;
+    }
+
+    const trip = await Trip.findOne(tripFilter);
+    if (!trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    // Record rejection and reset approval state
+    trip.documentsApproved = false;
+    trip.documentsApprovedBy = null;
+    trip.documentsApprovedAt = null;
+    trip.approvedWithoutDocuments = false;
+    trip.completionRejectionReason = reason.trim();
+    trip.rejectionHistory.push({
+      rejectedBy: rejectorId,
+      rejectedAt: new Date(),
+      reason: reason.trim(),
+      documentsCount: trip.documents.length
+    });
+
+    await trip.save();
+
+    await trip.populate([
+      { path: 'rejectionHistory.rejectedBy', select: 'name email' },
+      { path: 'driver', select: 'name email phone' },
+      { path: 'truck', select: 'plateNumber make model internalId' },
+      { path: 'trailer', select: 'plateNumber trailerNumber' }
+    ]);
+
+    // Notify driver via socket if possible
+    try {
+      const { getIO } = await import('../services/socketIo.js');
+      const io = getIO();
+      if (io && trip.driver) {
+        io.to(`driver_${trip.driver._id || trip.driver}`).emit('tripDocumentsRejected', {
+          tripId: trip._id,
+          tripNumber: trip.tripNumber,
+          reason: reason.trim(),
+          rejectedBy: req.user.name
+        });
+      }
+    } catch (_) { /* non-blocking */ }
+
+    res.json({
+      success: true,
+      message: 'Trip documents rejected. Driver has been notified to re-upload.',
+      data: trip
+    });
+  } catch (error) {
+    console.error('Error rejecting trip documents:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject trip documents',
+      error: error.message
+    });
+  }
+};
+
 // Complete Trip - changes order status to 'completed'
 // Now supports both Trip IDs and Order IDs (since getDriverTrips returns orders)
 export const completeTrip = async (req, res) => {
@@ -2714,6 +2797,27 @@ export const uploadTripDocument = async (req, res) => {
     // Add document to trip
     trip.documents.push(document);
     await trip.save();
+
+    // Notify dispatchers via socket (non-blocking)
+    try {
+      const { getIO } = await import('../services/socketIo.js');
+      const io = getIO();
+      if (io) {
+        const notification = {
+          type: 'DOCUMENT_UPLOAD',
+          title: 'Trip Document Uploaded',
+          message: `A document has been uploaded for trip ${trip.tripNumber || trip._id}`,
+          tripId: trip._id,
+          tripNumber: trip.tripNumber,
+          driverName: req.user.name,
+          documentType: docType,
+          timestamp: new Date().toISOString()
+        };
+        const roomId = companyId ? `dispatchers_${companyId}` : 'dispatchers_all';
+        io.to(roomId).emit('documentUploadNotification', notification);
+        io.to('dispatchers_all').emit('documentUploadNotification', notification);
+      }
+    } catch (_) { /* non-blocking */ }
 
     // Populate uploadedBy
     await trip.populate('documents.uploadedBy', 'name email');

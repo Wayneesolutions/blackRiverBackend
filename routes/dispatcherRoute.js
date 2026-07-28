@@ -138,6 +138,7 @@ import {
   startTrip,
   completeTrip,
   approveTripDocuments,
+  rejectTripDocuments,
   uploadTripDocument,
   deleteTripDocument,
   getTripDocumentSignedUrl
@@ -867,6 +868,12 @@ dispatcherRoute.post(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher'),
   approveTripDocuments
+)
+dispatcherRoute.post(
+  '/trip/:id/reject-documents',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher'),
+  rejectTripDocuments
 )
 dispatcherRoute.post(
   '/trip/:id/documents',

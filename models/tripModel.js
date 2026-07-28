@@ -67,6 +67,14 @@ const tripSchema = new mongoose.Schema(
       type: Boolean,
       default: false // If true, trip was approved even without required documents
     },
+    // Document rejection tracking
+    completionRejectionReason: { type: String, default: null },
+    rejectionHistory: [{
+      rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      rejectedAt: { type: Date, default: Date.now },
+      reason: { type: String },
+      documentsCount: { type: Number, default: 0 }
+    }],
     plannedStartDate: {
       type: Date,
       default: null

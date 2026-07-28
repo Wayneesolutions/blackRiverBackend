@@ -507,7 +507,7 @@ Based on this data, provide a comprehensive JSON response with the following str
 Focus on practical, actionable insights for managing cash flow in a trucking/logistics business.`;
 
   const result = await callOpenAI(prompt, {
-    model: 'o3-mini', // Using o3-mini model
+    model: 'gpt-4o-mini',
     responseFormat: { type: 'json_object' },
     temperature: 0.3,
     maxTokens: 3000

@@ -1,5 +1,6 @@
 import { User } from "../../models/driver/userModel.js";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { validationResult } from "express-validator";
 import { getCoordinatesFromAddress } from "../../services/googlemap.js";
 import { checkRoleCreationPermission } from "../../utils/subscriptionPermissions.js";
@@ -9,6 +10,7 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import mongoose from "mongoose";
 import { s3 } from "../../config/awsConfig.js";
+import { sendEmployeeInviteEmail } from "../../services/emailService.js";
 
 // ✅ CREATE EMPLOYEE
 export const createEmployee = async (req, res) => {
@@ -171,9 +173,18 @@ export const createEmployee = async (req, res) => {
             });
         }
 
-        // Hash the provided password or use default
-        const userPassword = password || "Employee@123";
-        const hashedPassword = await bcrypt.hash(userPassword, 12);
+        // If password provided by admin, use it; otherwise generate invite flow
+        let inviteRawToken = null;
+        let inviteHashedToken = null;
+        let hashedPassword;
+        if (password) {
+            hashedPassword = await bcrypt.hash(password, 12);
+        } else {
+            inviteRawToken = crypto.randomBytes(32).toString("hex");
+            inviteHashedToken = crypto.createHash("sha256").update(inviteRawToken).digest("hex");
+            const tempPassword = crypto.randomBytes(24).toString("hex");
+            hashedPassword = await bcrypt.hash(tempPassword, 12);
+        }
 
         // Get coordinates from address if provided
         let coordinates = { latitude: null, longitude: null };
@@ -212,7 +223,11 @@ export const createEmployee = async (req, res) => {
             role,
             password: hashedPassword,
             status: status || 'active',
-            company: userCompany // Use creator's company if not specified
+            company: userCompany, // Use creator's company if not specified
+            ...(inviteHashedToken ? {
+                passwordResetToken: inviteHashedToken,
+                passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000 // 72 hours
+            } : {})
         };
         
         // Only set joinDate if explicitly provided (don't auto-assign)
@@ -392,7 +407,15 @@ export const createEmployee = async (req, res) => {
         console.log('💾 Employee model before save - details.jobTime:', employee.details?.jobTime);
         await employee.save();
         console.log('💾 Employee model after save - details.jobTime:', employee.details?.jobTime);
-        
+
+        // Send invite email if no password was provided by admin
+        if (inviteRawToken) {
+            const inviteUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/accept-invite/${inviteRawToken}`;
+            sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl }).catch(err => {
+                console.warn('⚠️ Invite email failed (non-blocking):', err.message);
+            });
+        }
+
         const employeeId = employee._id;
         const companyObjectId = userCompany || getUserCompanyId(requestingUser);
         

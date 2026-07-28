@@ -376,6 +376,36 @@ app.post("/api/v1/auth/reset-password/:token", async (req, res) => {
   }
 });
 
+// ✅ Accept Employee Invite — validates token, sets password, activates account
+app.post("/api/v1/auth/accept-invite/:token", async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 8) {
+      return res.json({ success: false, message: "Password must be at least 8 characters." });
+    }
+
+    const hashedToken = crypto.createHash("sha256").update(req.params.token).digest("hex");
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.json({ success: false, message: "This invite link is invalid or has expired. Please ask your administrator to resend it." });
+    }
+
+    user.password = await bcrypt.hash(password, 12);
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    user.status = 'active';
+    await user.save({ validateBeforeSave: false });
+
+    res.json({ success: true, message: "Password set successfully. You can now sign in." });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+});
+
 // ✅ Swagger Documentation
 app.use('/api/v1/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
   explorer: true,

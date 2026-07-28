@@ -2392,3 +2392,84 @@ export const sendContactInquiryEmail = async ({ name, email, company, fleetSize,
     return { success: false, error: error.message };
   }
 };
+
+export const sendEmployeeInviteEmail = async ({ employeeEmail, employeeName, inviteUrl, companyName }) => {
+  try {
+    if (!employeeEmail) return { success: false, message: 'No email provided' };
+
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      console.warn('⚠️ [EMAIL] SMTP not configured — skipping invite email');
+      return { success: false, message: 'SMTP not configured' };
+    }
+
+    const transporter = createTransporter();
+    const firstName = employeeName ? employeeName.split(' ')[0] : 'there';
+    const company = companyName || 'Logistiq Innovation';
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>You're Invited to ${company}</title>
+      </head>
+      <body style="margin:0;padding:0;background-color:#f0f4f8;font-family:'Segoe UI',Arial,sans-serif;">
+        <div style="max-width:600px;margin:40px auto;">
+          <div style="background-color:#1183e0;border-radius:12px 12px 0 0;padding:36px 40px;text-align:center;">
+            <div style="font-size:36px;margin-bottom:10px;">🎉</div>
+            <h1 style="color:#ffffff;font-size:26px;font-weight:700;margin:0;letter-spacing:0.3px;">
+              You're Invited!
+            </h1>
+            <p style="color:#bfdbfe;font-size:14px;margin:8px 0 0;">Welcome to ${company}</p>
+          </div>
+          <div style="background-color:#ffffff;padding:40px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+            <p style="color:#1a202c;font-size:16px;margin:0 0 8px;font-weight:500;">
+              Hello <strong>${firstName}</strong>,
+            </p>
+            <p style="color:#4a5568;font-size:14px;margin:0 0 24px;line-height:1.7;">
+              Your account has been created on the <strong>${company}</strong> fleet management portal.
+              Click the button below to set your password and activate your account.
+            </p>
+            <div style="border-left:4px solid #1183e0;background-color:#eff6ff;border-radius:0 8px 8px 0;padding:14px 18px;margin:0 0 28px;">
+              <p style="color:#1e40af;font-size:13px;margin:0;line-height:1.6;">
+                <strong>⏱ This invite link expires in 72 hours.</strong><br/>
+                After that, contact your administrator to resend it.
+              </p>
+            </div>
+            <div style="text-align:center;margin:32px 0;">
+              <a href="${inviteUrl}"
+                 style="display:inline-block;background-color:#1183e0;color:#ffffff;text-decoration:none;padding:15px 44px;border-radius:8px;font-size:16px;font-weight:600;letter-spacing:0.3px;box-shadow:0 4px 14px rgba(17,131,224,0.35);">
+                Accept Invitation &amp; Set Password
+              </a>
+            </div>
+            <p style="color:#a0aec0;font-size:11px;margin:24px 0 0;line-height:1.7;">
+              If the button doesn't work, paste this link into your browser:<br/>
+              <a href="${inviteUrl}" style="color:#1183e0;word-break:break-all;">${inviteUrl}</a>
+            </p>
+          </div>
+          <div style="background-color:#f7fafc;border:1px solid #e2e8f0;border-radius:0 0 12px 12px;padding:20px 40px;text-align:center;">
+            <p style="color:#a0aec0;font-size:12px;margin:0;line-height:1.7;">
+              This email was sent by <strong style="color:#718096;">${company}</strong> via Logistiq Innovation Platform.<br/>
+              &copy; ${new Date().getFullYear()} Logistiq Innovation. All rights reserved.
+            </p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const info = await transporter.sendMail({
+      from: `"${company}" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+      to: employeeEmail,
+      subject: `You're invited to ${company} — Set your password`,
+      html: htmlContent,
+    });
+
+    console.log('✅ [EMAIL] Invite email sent:', { to: employeeEmail, messageId: info.messageId });
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('❌ [EMAIL] Failed to send invite email:', error.message);
+    return { success: false, error: error.message };
+  }
+};

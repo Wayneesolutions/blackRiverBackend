@@ -1028,7 +1028,7 @@ export const createOrder = async (req, res) => {
 // Get All Orders
 export const getAllOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, status, orderType, accountingStatus } = req.query;
+    const { page = 1, limit = 10, search, status, orderType, accountingStatus, loadBoard } = req.query;
 
     // Get company filter
     const userCompanyId = getUserCompanyId(req.user);
@@ -1084,6 +1084,31 @@ export const getAllOrders = async (req, res) => {
       query.accountingStatus = accountingStatus;
     }
 
+    // Load board view filters (server-side, so pagination works correctly)
+    let sortOrder = { createdAt: -1 };
+    if (loadBoard) {
+      switch (loadBoard) {
+        case 'HISTORICAL':
+          query.status = { $in: ['completed', 'delivered', 'canceled', 'cancelled'] };
+          break;
+        case 'INBOUND':
+          query['borderInfo.direction'] = 'US_TO_CA';
+          break;
+        case 'OUTBOUND':
+          query['borderInfo.direction'] = 'CA_TO_US';
+          break;
+        case 'TO/FROM YARD':
+          query.$or = [
+            { 'pickupLocation.place': { $regex: 'yard', $options: 'i' } },
+            { 'deliveryLocation.place': { $regex: 'yard', $options: 'i' } }
+          ];
+          break;
+        case 'CITY':
+          sortOrder = { 'pickupLocation.place': 1 };
+          break;
+      }
+    }
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const orders = await Order.find(query)
@@ -1097,7 +1122,7 @@ export const getAllOrders = async (req, res) => {
       .populate('coDriver', 'name email phone')
       .populate('truck', 'plateNumber internalId unitNumber make model')
       .populate('trailer', 'plateNumber trailer unitNumber internalId')
-      .sort({ createdAt: -1 })
+      .sort(sortOrder)
       .skip(skip)
       .limit(parseInt(limit));
 

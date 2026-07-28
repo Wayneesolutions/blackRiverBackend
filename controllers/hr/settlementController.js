@@ -79,8 +79,34 @@ export const createSettlement = async (req, res) => {
       });
     }
 
+    // Auto-compute grossPay from miles if caller doesn't provide it (or sends 0)
+    let computedGrossPay = Number(grossPay) || 0;
+    let computedTotalMiles = 0;
+    let computedRatePerMile = 0;
+
+    if ((!grossPay || Number(grossPay) === 0) && payPeriod?.startDate && payPeriod?.endDate) {
+      // Pull miles records for this driver in the pay period
+      const periodMiles = await MilesTracking.find({
+        driver,
+        date: {
+          $gte: new Date(payPeriod.startDate),
+          $lte: new Date(payPeriod.endDate)
+        }
+      }).lean();
+
+      computedTotalMiles = periodMiles.reduce((sum, r) => sum + (r.totalMiles || 0), 0);
+
+      // Get rate from driver profile (prefer salaryPerMile, fall back to mileRate)
+      const rate = driverUser.details?.salaryPerMile || driverUser.details?.mileRate || 0;
+      computedRatePerMile = Number(rate);
+
+      if (computedTotalMiles > 0 && computedRatePerMile > 0) {
+        computedGrossPay = parseFloat((computedTotalMiles * computedRatePerMile).toFixed(2));
+      }
+    }
+
     // Calculate net pay
-    const netPay = Number(grossPay) + Number(additions) - Number(deductions);
+    const netPay = computedGrossPay + Number(additions) - Number(deductions);
 
     // Generate settlement ID with retry logic for duplicate key errors
     let settlementId = await generateSettlementId(companyId);
@@ -97,7 +123,9 @@ export const createSettlement = async (req, res) => {
             startDate: new Date(payPeriod.startDate),
             endDate: new Date(payPeriod.endDate)
           },
-          grossPay: Number(grossPay),
+          grossPay: computedGrossPay,
+          totalMiles: computedTotalMiles,
+          ratePerMile: computedRatePerMile,
           deductions: Number(deductions),
           additions: Number(additions),
           netPay,
@@ -676,6 +704,14 @@ export const updateDeductionAddition = async (req, res) => {
       });
     }
 
+    // Validate new assignee still exists before reassigning
+    if (assignedTo && assignedTo !== deductionAddition.assignedTo?.toString()) {
+      const assignee = await User.findById(assignedTo);
+      if (!assignee) {
+        return res.status(404).json({ success: false, message: "Assigned employee not found" });
+      }
+    }
+
     if (name) deductionAddition.name = name;
     if (type) deductionAddition.type = type;
     if (recurrence) deductionAddition.recurrence = recurrence;
@@ -743,6 +779,12 @@ export const deleteDeductionAddition = async (req, res) => {
         message: "Deduction/Addition not found"
       });
     }
+
+    // Remove stale reference from any settlements that still hold this ID
+    await Settlement.updateMany(
+      { appliedDeductions: deductionAddition._id },
+      { $pull: { appliedDeductions: deductionAddition._id } }
+    );
 
     res.json({
       success: true,

@@ -32,6 +32,14 @@ const settlementSchema = new mongoose.Schema({
     required: true,
     default: 0
   },
+  totalMiles: {
+    type: Number,
+    default: 0
+  },
+  ratePerMile: {
+    type: Number,
+    default: 0
+  },
   deductions: {
     type: Number,
     default: 0

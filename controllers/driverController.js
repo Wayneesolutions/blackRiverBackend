@@ -2,6 +2,7 @@ import { User } from "../models/driver/userModel.js";
 import Trip from "../models/tripModel.js";
 import Order from "../models/orderModel.js";
 import { CompanySettings } from "../models/driver/companysettingsModel.js";
+import { DeductionAddition, Settlement } from "../models/hr/settlementModel.js";
 import { validationResult } from "express-validator";
 import { comparePassword, hashPassword } from "../services/bcrypt.js";
 import jwt from "jsonwebtoken";
@@ -340,6 +341,18 @@ export const deleteDriver = async (req, res) => {
       return res.status(404).json({ success: false, message: "Driver does not exist" });
     }
     await User.findOneAndDelete({ _id: id });
+
+    // Cascade: remove all deductions/additions for this driver and clean up settlement refs
+    const orphanedDeds = await DeductionAddition.find({ assignedTo: id }).select('_id').lean();
+    if (orphanedDeds.length > 0) {
+      const orphanIds = orphanedDeds.map(d => d._id);
+      await DeductionAddition.deleteMany({ _id: { $in: orphanIds } });
+      await Settlement.updateMany(
+        { appliedDeductions: { $in: orphanIds } },
+        { $pull: { appliedDeductions: { $in: orphanIds } } }
+      );
+    }
+
     res.status(200).json({
       success: true,
       message: "Driver deleted successfully"
@@ -510,6 +523,11 @@ export const getDriverById = async (req, res) => {
           "details.customHst": 1,
           "details.driverName": 1,
           "details.paymentAddress": 1,
+          "details.paymentSearchAddress": 1,
+          "details.paymentCity": 1,
+          "details.paymentPostalCode": 1,
+          "details.paymentCountry": 1,
+          "details.paymentStateProvince": 1,
           "details.driverTypeSolo": 1,
           "details.cross_border_eligible": 1,
           "details.drug_tests": 1,
@@ -524,6 +542,8 @@ export const getDriverById = async (req, res) => {
           "details.bonusDrop": 1,
           "details.bonusPick": 1,
           "details.bonusLayover": 1,
+          "details.perTripAmount": 1,
+          "details.dailyRate": 1,
           vehicleDetails: 1,
           documents: 1
         }
@@ -1086,6 +1106,11 @@ export const getDriverById = async (req, res) => {
       customHst: driver.details?.customHst || '',
       driverName: driver.details?.driverName || '',
       paymentAddress: driver.details?.paymentAddress || '',
+      paymentSearchAddress: driver.details?.paymentSearchAddress || '',
+      paymentCity: driver.details?.paymentCity || '',
+      paymentPostalCode: driver.details?.paymentPostalCode || '',
+      paymentCountry: driver.details?.paymentCountry || '',
+      paymentStateProvince: driver.details?.paymentStateProvince || '',
       driverTypeSolo: driver.details?.driverTypeSolo !== undefined ? driver.details.driverTypeSolo : true, // true = SOLO, false = TEAM
       // Payment rate fields (ALONE, EMPTY, TEAM, etc.)
       alone: driver.details?.mileRate || 0, // ALONE* = mileRate
@@ -1097,7 +1122,9 @@ export const getDriverById = async (req, res) => {
       percentageRate: driver.details?.percentageRate || 0,
       bonusDrop: driver.details?.bonusDrop || 0, // BONUS/DROP
       bonusPick: driver.details?.bonusPick || 0, // BONUS/PICK
-      bonusLayover: driver.details?.bonusLayover || 0 // BONUS/LAYOVER
+      bonusLayover: driver.details?.bonusLayover || 0,
+      perTripAmount: driver.details?.perTripAmount || 0,
+      dailyRate: driver.details?.dailyRate || 0
     };
     console.log('💰 Payment Rate Fields:', {
       mileRate: driver.details?.mileRate,
@@ -1315,6 +1342,11 @@ export const createDriver = async (req, res) => {
       incorporation,
       driverName,
       paymentAddress,
+      paymentSearchAddress,
+      paymentCity,
+      paymentPostalCode,
+      paymentCountry,
+      paymentStateProvince,
       gstNo,
       vacationPay,
       companyFlag,
@@ -1688,6 +1720,19 @@ export const createDriver = async (req, res) => {
       console.log('⚠️ bonusLayover not set (undefined or null):', bonusLayover);
     }
     if (paymentMethod) detailsObj.paymentMethod = paymentMethod;
+    if (perTripAmount !== undefined && perTripAmount !== null) {
+      const parsed = parseFloat(perTripAmount);
+      if (!isNaN(parsed)) detailsObj.perTripAmount = parsed;
+    }
+    if (dailyRate !== undefined && dailyRate !== null) {
+      const parsed = parseFloat(dailyRate);
+      if (!isNaN(parsed)) detailsObj.dailyRate = parsed;
+    }
+    if (paymentSearchAddress !== undefined) detailsObj.paymentSearchAddress = paymentSearchAddress || '';
+    if (paymentCity !== undefined) detailsObj.paymentCity = paymentCity || '';
+    if (paymentPostalCode !== undefined) detailsObj.paymentPostalCode = paymentPostalCode || '';
+    if (paymentCountry !== undefined) detailsObj.paymentCountry = paymentCountry || '';
+    if (paymentStateProvince !== undefined) detailsObj.paymentStateProvince = paymentStateProvince || '';
 
     // Exemption fields
     if (cppExempt !== undefined) {
@@ -1713,9 +1758,6 @@ export const createDriver = async (req, res) => {
       detailsObj.cross_border_eligible = crossBorderBool;
       console.log('✅ Setting cross_border_eligible on create:', crossBorderBool);
     }
-
-    // Note: bonusDrop, bonusPick, bonusLayover, perTripAmount, dailyRate are not in the schema yet
-    // If needed, they should be added to the userModel schema first
 
     // Get company: use requesting user's company (users can only create drivers in their own company)
     // This ensures all drivers created by an admin/HR belong to the same company
@@ -2680,6 +2722,11 @@ export const createDriver = async (req, res) => {
       customHst: savedDriver.details?.customHst || '',
       driverName: savedDriver.details?.driverName || '',
       paymentAddress: savedDriver.details?.paymentAddress || '',
+      paymentSearchAddress: savedDriver.details?.paymentSearchAddress || '',
+      paymentCity: savedDriver.details?.paymentCity || '',
+      paymentPostalCode: savedDriver.details?.paymentPostalCode || '',
+      paymentCountry: savedDriver.details?.paymentCountry || '',
+      paymentStateProvince: savedDriver.details?.paymentStateProvince || '',
       driverTypeSolo: savedDriver.details?.driverTypeSolo !== undefined ? savedDriver.details.driverTypeSolo : true, // true = SOLO, false = TEAM
       // Payment rate fields (ALONE, EMPTY, TEAM, etc.)
       alone: savedDriver.details?.mileRate || 0, // ALONE* = mileRate
@@ -2691,7 +2738,9 @@ export const createDriver = async (req, res) => {
       percentageRate: savedDriver.details?.percentageRate || 0,
       bonusDrop: savedDriver.details?.bonusDrop || 0, // BONUS/DROP
       bonusPick: savedDriver.details?.bonusPick || 0, // BONUS/PICK
-      bonusLayover: savedDriver.details?.bonusLayover || 0 // BONUS/LAYOVER
+      bonusLayover: savedDriver.details?.bonusLayover || 0,
+      perTripAmount: savedDriver.details?.perTripAmount || 0,
+      dailyRate: savedDriver.details?.dailyRate || 0
     };
 
     // Format drug tests for response
@@ -2830,6 +2879,11 @@ export const updateDriver = async (req, res) => {
       customHst,
       driverName,
       paymentAddress,
+      paymentSearchAddress,
+      paymentCity,
+      paymentPostalCode,
+      paymentCountry,
+      paymentStateProvince,
       // Driver Type (SOLO/TEAM)
       driverTypeSolo,
       solo,
@@ -3178,6 +3232,8 @@ export const updateDriver = async (req, res) => {
     if (bonusDrop !== undefined) driver.details.bonusDrop = Number(bonusDrop) || 0;
     if (bonusPick !== undefined) driver.details.bonusPick = Number(bonusPick) || 0;
     if (bonusLayover !== undefined) driver.details.bonusLayover = Number(bonusLayover) || 0;
+    if (perTripAmount !== undefined) driver.details.perTripAmount = Number(perTripAmount) || 0;
+    if (dailyRate !== undefined) driver.details.dailyRate = Number(dailyRate) || 0;
 
     // Update personal information fields
     if (termDate !== undefined) driver.details.termDate = termDate ? new Date(termDate) : null;
@@ -3201,6 +3257,11 @@ export const updateDriver = async (req, res) => {
     if (customHst !== undefined) driver.details.customHst = customHst || '';
     if (driverName !== undefined) driver.details.driverName = driverName || '';
     if (paymentAddress !== undefined) driver.details.paymentAddress = paymentAddress || '';
+    if (paymentSearchAddress !== undefined) driver.details.paymentSearchAddress = paymentSearchAddress || '';
+    if (paymentCity !== undefined) driver.details.paymentCity = paymentCity || '';
+    if (paymentPostalCode !== undefined) driver.details.paymentPostalCode = paymentPostalCode || '';
+    if (paymentCountry !== undefined) driver.details.paymentCountry = paymentCountry || '';
+    if (paymentStateProvince !== undefined) driver.details.paymentStateProvince = paymentStateProvince || '';
     // Update driver type (SOLO/TEAM) - driverTypeSolo: true = SOLO, false = TEAM
     // Accept both driverTypeSolo and solo for backward compatibility
     if (driverTypeSolo !== undefined || solo !== undefined) {
@@ -4469,6 +4530,11 @@ export const updateDriver = async (req, res) => {
       customHst: updatedDriver.details?.customHst || '',
       driverName: updatedDriver.details?.driverName || '',
       paymentAddress: updatedDriver.details?.paymentAddress || '',
+      paymentSearchAddress: updatedDriver.details?.paymentSearchAddress || '',
+      paymentCity: updatedDriver.details?.paymentCity || '',
+      paymentPostalCode: updatedDriver.details?.paymentPostalCode || '',
+      paymentCountry: updatedDriver.details?.paymentCountry || '',
+      paymentStateProvince: updatedDriver.details?.paymentStateProvince || '',
       driverTypeSolo: updatedDriver.details?.driverTypeSolo !== undefined ? updatedDriver.details.driverTypeSolo : true, // true = SOLO, false = TEAM
       cross_border_eligible: updatedDriver.details?.cross_border_eligible !== undefined ? updatedDriver.details.cross_border_eligible : false,
       // Payment rate fields (ALONE, EMPTY, TEAM, etc.)
@@ -4481,7 +4547,9 @@ export const updateDriver = async (req, res) => {
       percentageRate: updatedDriver.details?.percentageRate || 0,
       bonusDrop: updatedDriver.details?.bonusDrop || 0, // BONUS/DROP
       bonusPick: updatedDriver.details?.bonusPick || 0, // BONUS/PICK
-      bonusLayover: updatedDriver.details?.bonusLayover || 0 // BONUS/LAYOVER
+      bonusLayover: updatedDriver.details?.bonusLayover || 0,
+      perTripAmount: updatedDriver.details?.perTripAmount || 0,
+      dailyRate: updatedDriver.details?.dailyRate || 0
     };
 
     const responseData = {

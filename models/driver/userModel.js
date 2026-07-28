@@ -151,6 +151,8 @@ const userSchema = new mongoose.Schema({
     bonusDrop: { type: Number, default: 0 }, // BONUS/DROP
     bonusPick: { type: Number, default: 0 }, // BONUS/PICK
     bonusLayover: { type: Number, default: 0 }, // BONUS/LAYOVER
+    perTripAmount: { type: Number, default: 0 },
+    dailyRate: { type: Number, default: 0 },
     
     // Salary per Mile Fields (for weather-based calculations)
     salaryPerMile: { type: Number, default: 0 }, // Base salary per mile
@@ -170,7 +172,12 @@ const userSchema = new mongoose.Schema({
     qpipExempt: { type: Boolean, default: false },
     customHst: { type: String }, // Custom HST percentage
     driverName: { type: String }, // Driver name for payment
-    paymentAddress: { type: String }, // Payment address
+    paymentAddress: { type: String }, // Payment address (legacy single-string)
+    paymentSearchAddress: { type: String },
+    paymentCity: { type: String },
+    paymentPostalCode: { type: String },
+    paymentCountry: { type: String },
+    paymentStateProvince: { type: String },
     driverTypeSolo: { type: Boolean, default: true }, // true = SOLO, false = TEAM
     cross_border_eligible: { type: Boolean, default: false }, // Cross-border eligibility
     

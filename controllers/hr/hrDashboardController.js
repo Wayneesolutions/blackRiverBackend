@@ -333,23 +333,27 @@ export const getHRDashboard = async (req, res) => {
       openIssues = 0;
     }
 
-    // US-based Drivers count (based on citizenship)
+    // US-based Drivers count (country or citizenship matches US)
     const usBasedDriversFilter = {
       ...userFilter,
       role: 'driver',
       $or: [
+        { country: { $regex: /^US$/i } },
+        { country: { $regex: /^United States$/i } },
+        { country: { $regex: /^USA$/i } },
         { 'details.citizenship': { $regex: /^US$/i } },
         { 'details.citizenship': { $regex: /^United States$/i } },
         { 'details.citizenship': { $regex: /^USA$/i } }
       ]
     };
-    const usBasedDrivers = await User.find({role: 'driver','details.cross_border_eligible': true}).countDocuments();
-   console.log(usBasedDrivers,'usBasedDrivers');
-    // Canada-based Drivers count (based on citizenship)
+    const usBasedDrivers = await User.countDocuments(usBasedDriversFilter);
+    // Canada-based Drivers count (country or citizenship matches Canada)
     const canadaBasedDriversFilter = {
       ...userFilter,
       role: 'driver',
       $or: [
+        { country: { $regex: /^Canada$/i } },
+        { country: { $regex: /^CA$/i } },
         { 'details.citizenship': { $regex: /^Canada$/i } },
         { 'details.citizenship': { $regex: /^Canadian$/i } }
       ]
