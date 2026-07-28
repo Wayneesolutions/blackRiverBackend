@@ -5648,27 +5648,46 @@ export const importDrivers = async (req, res) => {
       const row = rows[i];
       const rowNum = i + 2; // 1-indexed + header row
 
-      const name = row.name || row.full_name || row.driver_name || '';
-      const email = (row.email || row.email_address || '').toLowerCase();
-      const phone = row.phone || row.phone_number || row.mobile || '';
-      const country = row.country || 'Canada';
+      // Support both 'name' and 'first_name'+'last_name' column patterns
+      const firstName = row.first_name || row.firstname || '';
+      const lastName = row.last_name || row.lastname || '';
+      const name = row.name || row.full_name || row.driver_name
+        || (firstName && lastName ? `${firstName} ${lastName}` : firstName || lastName)
+        || '';
 
-      if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required' }); continue; }
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        errors.push({ row: rowNum, data: row, reason: 'Valid email is required' }); continue;
-      }
+      const rawEmail = (row.email || row.email_address || row.contact_email || '').toLowerCase().trim();
+      const phone = row.phone || row.phone_number || row.mobile || row.cell || '';
+      const country = row.country || 'Canada';
+      const csvDriverId = row.driver_id || row.driverid || row.internal_id || '';
+
+      if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required (columns: name, or first_name + last_name)' }); continue; }
+
+      const timestamp = Date.now().toString().slice(-6);
+      const internalId = csvDriverId || `DRV-${timestamp}-${i}`;
+
+      // Email is optional — if missing we generate a placeholder so the record is still created
+      const hasRealEmail = rawEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+      const email = hasRealEmail ? rawEmail : `noemail-${internalId.toLowerCase().replace(/\s+/g, '-')}@logistiq.import`;
 
       // Skip duplicate (same email + company)
       const existing = await User.findOne({ email, company: companyId }).lean();
       if (existing) { skipped++; continue; }
 
-      // Create with invite flow
-      const inviteRawToken = crypto.randomBytes(32).toString('hex');
-      const inviteHashedToken = crypto.createHash('sha256').update(inviteRawToken).digest('hex');
+      // Also skip by internalId if provided
+      if (csvDriverId) {
+        const existingById = await User.findOne({ internalId: csvDriverId, company: companyId }).lean();
+        if (existingById) { skipped++; continue; }
+      }
+
       const tempPassword = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
 
-      const timestamp = Date.now().toString().slice(-6);
-      const internalId = `DRV-${timestamp}-${i}`;
+      // Only set up invite flow if there's a real email
+      let inviteRawToken = null;
+      let inviteHashedToken = null;
+      if (hasRealEmail) {
+        inviteRawToken = crypto.randomBytes(32).toString('hex');
+        inviteHashedToken = crypto.createHash('sha256').update(inviteRawToken).digest('hex');
+      }
 
       try {
         const driver = new User({
@@ -5677,17 +5696,21 @@ export const importDrivers = async (req, res) => {
           phone,
           country,
           role: 'driver',
-          status: 'active',
+          status: row.status === 'inactive' ? 'inactive' : 'active',
           company: companyId,
           internalId,
           password: tempPassword,
-          passwordResetToken: inviteHashedToken,
-          passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000
+          ...(inviteHashedToken ? {
+            passwordResetToken: inviteHashedToken,
+            passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000
+          } : {})
         });
         await driver.save({ validateBeforeSave: false });
 
-        const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite/${inviteRawToken}`;
-        sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl, companyName }).catch(() => {});
+        if (inviteRawToken && hasRealEmail) {
+          const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite/${inviteRawToken}`;
+          sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl, companyName }).catch(() => {});
+        }
 
         imported++;
       } catch (saveErr) {
