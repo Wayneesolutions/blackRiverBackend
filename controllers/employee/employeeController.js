@@ -12,6 +12,7 @@ import mongoose from "mongoose";
 import { s3 } from "../../config/awsConfig.js";
 import { sendEmployeeInviteEmail } from "../../services/emailService.js";
 import { parseImportFile, mapRow } from "../../utils/importParser.js";
+import { DeductionAddition, Settlement } from "../../models/hr/settlementModel.js";
 
 // ✅ CREATE EMPLOYEE
 export const createEmployee = async (req, res) => {
@@ -2107,6 +2108,17 @@ export const deleteEmployee = async (req, res) => {
                 success: false,
                 message: "Employee not found"
             });
+        }
+
+        // Cascade: remove all deductions/additions for this employee and clean up settlement refs
+        const orphanedDeds = await DeductionAddition.find({ assignedTo: employee._id }).select('_id').lean();
+        if (orphanedDeds.length > 0) {
+            const orphanIds = orphanedDeds.map(d => d._id);
+            await DeductionAddition.deleteMany({ _id: { $in: orphanIds } });
+            await Settlement.updateMany(
+                { appliedDeductions: { $in: orphanIds } },
+                { $pull: { appliedDeductions: { $in: orphanIds } } }
+            );
         }
 
         console.log('✅ Employee deleted successfully:', employee._id);

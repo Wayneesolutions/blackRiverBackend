@@ -106,7 +106,8 @@ export const getAccountsDashboard = async (req, res) => {
     const repairCost = repairs.reduce((sum, r) => sum + normalizeAmount(r.amount || 0), 0);
 
     const paidFleetInvoices = await FleetInvoice.find({ ...baseFilter, status: 'paid' }).lean();
-    const fleetInvoiceCost = paidFleetInvoices.reduce((sum, fi) => sum + normalizeAmount(fi.amount || 0), 0);
+    // FleetInvoice's total cost field is `total`, not `amount` (which doesn't exist on the schema)
+    const fleetInvoiceCost = paidFleetInvoices.reduce((sum, fi) => sum + normalizeAmount(fi.total || 0), 0);
 
     const totalExpenses = directExpenses + fuelCost + repairCost + fleetInvoiceCost;
 
