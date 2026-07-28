@@ -6,7 +6,7 @@ import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 import VehicleDocuments from "../models/driver/vehicleDocumentsModel.js";
 import { Subscription } from "../models/subscriptionModel.js";
-import { parseImportFile } from "../utils/importParser.js";
+import { parseImportFile, mapRow } from "../utils/importParser.js";
 
 
 // Helper function to process inspections with file uploads
@@ -1538,20 +1538,22 @@ export const importVehicles = async (req, res) => {
     const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
     if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
 
+    const fieldMap = req.body.fieldMap ? JSON.parse(req.body.fieldMap) : null;
+
     let imported = 0, skipped = 0;
     const errors = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+      const row = mapRow(rows[i], fieldMap);
       const rowNum = i + 2;
 
-      const plateNumber = row.plate_number || row.platenumber || row.plate || row.license_plate || '';
-      const make = row.make || row.manufacturer || '';
+      const plateNumber = row.plate_number || '';
+      const make = row.make || '';
       const model = row.model || '';
       const year = row.year || '';
-      const vinNumber = row.vin || row.vin_number || row.vinnumber || '';
-      const internalId = row.internal_id || row.internalid || row.unit_number || row.unit || `TRK-${Date.now()}-${i}`;
-      const type = row.type || row.vehicle_type || '';
+      const vinNumber = row.vin || '';
+      const internalId = row.internal_id || `TRK-${Date.now()}-${i}`;
+      const type = row.type || '';
       const status = row.status || 'In Service';
 
       if (!plateNumber) { errors.push({ row: rowNum, data: row, reason: 'Plate number is required' }); continue; }

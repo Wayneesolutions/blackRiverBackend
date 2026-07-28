@@ -9,7 +9,7 @@ import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { parseImportFile } from "../utils/importParser.js";
+import { parseImportFile, mapRow } from "../utils/importParser.js";
 
 
 // Change Password
@@ -5637,6 +5637,8 @@ export const importDrivers = async (req, res) => {
     const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
     if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
 
+    const fieldMap = req.body.fieldMap ? JSON.parse(req.body.fieldMap) : null;
+
     const { sendEmployeeInviteEmail } = await import('../services/emailService.js');
     const companyDoc = companyId ? await CompanySettings.findById(companyId).lean() : null;
     const companyName = companyDoc?.companyName || 'Logistiq';
@@ -5645,20 +5647,18 @@ export const importDrivers = async (req, res) => {
     const errors = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+      const row = mapRow(rows[i], fieldMap);
       const rowNum = i + 2; // 1-indexed + header row
 
       // Support both 'name' and 'first_name'+'last_name' column patterns
-      const firstName = row.first_name || row.firstname || '';
-      const lastName = row.last_name || row.lastname || '';
-      const name = row.name || row.full_name || row.driver_name
-        || (firstName && lastName ? `${firstName} ${lastName}` : firstName || lastName)
-        || '';
+      const firstName = row.first_name || '';
+      const lastName = row.last_name || '';
+      const name = row.name || (firstName || lastName ? `${firstName} ${lastName}`.trim() : '') || '';
 
-      const rawEmail = (row.email || row.email_address || row.contact_email || '').toLowerCase().trim();
-      const phone = row.phone || row.phone_number || row.mobile || row.cell || '';
+      const rawEmail = (row.email || '').toLowerCase().trim();
+      const phone = row.phone || '';
       const country = row.country || 'Canada';
-      const csvDriverId = row.driver_id || row.driverid || row.internal_id || '';
+      const csvDriverId = row.driver_id || '';
 
       if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required (columns: name, or first_name + last_name)' }); continue; }
 

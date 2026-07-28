@@ -11,7 +11,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import mongoose from "mongoose";
 import { s3 } from "../../config/awsConfig.js";
 import { sendEmployeeInviteEmail } from "../../services/emailService.js";
-import { parseImportFile } from "../../utils/importParser.js";
+import { parseImportFile, mapRow } from "../../utils/importParser.js";
 
 // ✅ CREATE EMPLOYEE
 export const createEmployee = async (req, res) => {
@@ -2380,17 +2380,19 @@ export const importEmployees = async (req, res) => {
     const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
     if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
 
+    const fieldMap = req.body.fieldMap ? JSON.parse(req.body.fieldMap) : null;
+
     let imported = 0, skipped = 0;
     const errors = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+      const row = mapRow(rows[i], fieldMap);
       const rowNum = i + 2;
 
-      const name = row.name || row.full_name || row.employee_name || '';
-      const email = (row.email || row.email_address || '').toLowerCase();
-      const role = row.role || row.position || 'employee';
-      const phone = row.phone || row.phone_number || row.mobile || '';
+      const name = row.name || '';
+      const email = (row.email || '').toLowerCase();
+      const role = row.role || 'employee';
+      const phone = row.phone || '';
       const department = row.department || '';
 
       if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required' }); continue; }

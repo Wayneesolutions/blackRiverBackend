@@ -40,6 +40,23 @@ function normalizeKey(k) {
 }
 
 /**
+ * Apply a field map to a normalized row.
+ * fieldMap: { normalizedCsvColumn: ourCanonicalFieldName }
+ * Returns a new object keyed by our field names.
+ * If fieldMap is null/empty, returns the row unchanged (identity pass-through).
+ */
+export function mapRow(row, fieldMap) {
+  if (!fieldMap || !Object.keys(fieldMap).length) return row;
+  const mapped = {};
+  for (const [csvKey, ourKey] of Object.entries(fieldMap)) {
+    if (ourKey && ourKey !== '__skip__' && row[csvKey] !== undefined) {
+      mapped[ourKey] = row[csvKey];
+    }
+  }
+  return mapped;
+}
+
+/**
  * Build a downloadable error-report workbook buffer (xlsx).
  * errors: [{ row: number, data: object, reason: string }]
  */
