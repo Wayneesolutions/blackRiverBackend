@@ -2394,6 +2394,7 @@ export const importEmployees = async (req, res) => {
       const name = row.name || (firstName || lastName ? `${firstName} ${lastName}`.trim() : '');
       const email = (row.email || '').toLowerCase();
       const role = row.role || 'employee';
+      const status = row.status === 'inactive' ? 'inactive' : 'active';
       const phone = row.phone || '';
       const department = row.department || '';
       const jobTitle = row.job_title || '';
@@ -2430,7 +2431,7 @@ export const importEmployees = async (req, res) => {
           country: country || undefined,
           city: city || undefined,
           role,
-          status: 'active',
+          status,
           company: companyId,
           internalId,
           password: tempPassword,
