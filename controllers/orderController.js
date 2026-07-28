@@ -4359,6 +4359,23 @@ export const approveOrderDocuments = async (req, res) => {
       });
     }
 
+    // Block re-approval
+    if (order.documentsApproved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Documents already approved for this order.'
+      });
+    }
+
+    // Block approval if no documents uploaded and not explicitly overridden
+    const hasDocuments = order.attachments && order.attachments.length > 0;
+    if (!hasDocuments && approveWithoutDocuments !== true) {
+      return res.status(400).json({
+        success: false,
+        message: 'No documents uploaded. Upload documents first, or use "Approve Without Documents" to override.'
+      });
+    }
+
     // Approve documents
     order.documentsApproved = true;
     order.documentsApprovedBy = approverId;

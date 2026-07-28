@@ -1,5 +1,6 @@
 import { User } from "../models/driver/userModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
+import { parseImportFile, mapRow } from "../utils/importParser.js";
 
 // Create Customer
 export const createCustomer = async (req, res) => {
@@ -413,5 +414,108 @@ export const searchCustomers = async (req, res) => {
     res.status(200).json({ success: true, data: customers });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Bulk Import Customers from CSV / Excel
+export const importCustomers = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
+    const companyId = req.user?.company;
+    if (!companyId && req.user?.role !== 'superadmin') {
+      return res.status(400).json({ success: false, message: 'Company settings not found.' });
+    }
+
+    const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
+    if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
+
+    const fieldMap = req.body.fieldMap ? JSON.parse(req.body.fieldMap) : null;
+
+    let imported = 0, skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = mapRow(rows[i], fieldMap);
+      const rowNum = i + 2;
+
+      const name = (row.name || '').trim();
+      if (!name) {
+        errors.push({ row: rowNum, data: row, reason: 'Name is required' });
+        continue;
+      }
+
+      const rawEmail = (row.email || '').toLowerCase().trim();
+      const hasRealEmail = rawEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+      const timestamp = Date.now().toString().slice(-6);
+      const csvCustomerId = (row.customer_id || '').trim();
+      const internalId = csvCustomerId || `CUST-${timestamp}-${i}`;
+      const email = hasRealEmail ? rawEmail : `noemail-${internalId.toLowerCase().replace(/\s+/g, '-')}@logistiq.import`;
+
+      // Skip duplicate by email + company
+      const existingByEmail = await User.findOne({ email, role: 'customer', company: companyId }).lean();
+      if (existingByEmail) { skipped++; continue; }
+
+      // Skip duplicate by internalId + company if provided
+      if (csvCustomerId) {
+        const existingById = await User.findOne({ internalId: csvCustomerId, role: 'customer', company: companyId }).lean();
+        if (existingById) { skipped++; continue; }
+      }
+
+      const phone = (row.phone || '').trim();
+      const emailSecondary = (row.email_secondary || '').trim() || undefined;
+      const phoneSecondary = (row.phone_secondary || '').trim() || undefined;
+      const customerType = row.customer_type || 'Customer';
+      const address = (row.address || '').trim() || undefined;
+      const city = (row.city || '').trim() || undefined;
+      const state = (row.state || '').trim() || undefined;
+      const country = (row.country || '').trim() || undefined;
+      const zipCode = (row.postal_code || '').trim() || undefined;
+      const contact = (row.contact || '').trim() || undefined;
+      const taxId = (row.tax_id || '').trim() || undefined;
+      const creditLimit = row.credit_limit ? Number(row.credit_limit) : undefined;
+      const creditTerm = (row.credit_term || '').trim() || undefined;
+      const billingType = (row.billing_type || '').trim() || 'DEFAULT / LOAD';
+
+      try {
+        const customerDoc = new User({
+          name,
+          email,
+          phone: phone || undefined,
+          country,
+          state,
+          city,
+          internalId,
+          joinDate: new Date(),
+          role: 'customer',
+          ...(companyId && { company: companyId }),
+          customerDetails: {
+            customerType,
+            customerId: csvCustomerId || internalId,
+            emailPrimary: hasRealEmail ? email : undefined,
+            emailSecondary,
+            phonePrimary: phone || undefined,
+            phoneSecondary,
+            contact,
+            address,
+            zipCode,
+            stateProvince: state,
+            taxId,
+            creditLimit,
+            creditTerm,
+            billingType,
+          }
+        });
+        await customerDoc.save({ validateBeforeSave: false });
+        imported++;
+      } catch (saveErr) {
+        errors.push({ row: rowNum, data: row, reason: saveErr.message || 'Failed to save' });
+      }
+    }
+
+    res.json({ success: true, imported, skipped, errors, total: rows.length });
+  } catch (error) {
+    console.error('importCustomers error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Import failed' });
   }
 };

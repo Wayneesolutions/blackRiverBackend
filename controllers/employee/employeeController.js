@@ -174,15 +174,14 @@ export const createEmployee = async (req, res) => {
             });
         }
 
-        // If password provided by admin, use it; otherwise generate invite flow
-        let inviteRawToken = null;
-        let inviteHashedToken = null;
+        // Always generate invite token so the employee gets a welcome email to set their password.
+        // If admin provided a password, use it as the initial password; the invite link lets the employee change it.
+        const inviteRawToken = crypto.randomBytes(32).toString("hex");
+        const inviteHashedToken = crypto.createHash("sha256").update(inviteRawToken).digest("hex");
         let hashedPassword;
         if (password) {
             hashedPassword = await bcrypt.hash(password, 12);
         } else {
-            inviteRawToken = crypto.randomBytes(32).toString("hex");
-            inviteHashedToken = crypto.createHash("sha256").update(inviteRawToken).digest("hex");
             const tempPassword = crypto.randomBytes(24).toString("hex");
             hashedPassword = await bcrypt.hash(tempPassword, 12);
         }
@@ -225,10 +224,8 @@ export const createEmployee = async (req, res) => {
             password: hashedPassword,
             status: status || 'active',
             company: userCompany, // Use creator's company if not specified
-            ...(inviteHashedToken ? {
-                passwordResetToken: inviteHashedToken,
-                passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000 // 72 hours
-            } : {})
+            passwordResetToken: inviteHashedToken,
+            passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000 // 72 hours
         };
         
         // Only set joinDate if explicitly provided (don't auto-assign)
@@ -409,13 +406,12 @@ export const createEmployee = async (req, res) => {
         await employee.save();
         console.log('💾 Employee model after save - details.jobTime:', employee.details?.jobTime);
 
-        // Send invite email if no password was provided by admin
-        if (inviteRawToken) {
-            const inviteUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/accept-invite/${inviteRawToken}`;
-            sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl }).catch(err => {
-                console.warn('⚠️ Invite email failed (non-blocking):', err.message);
-            });
-        }
+        // Always send invite email so the employee is notified and can set their own password
+        const inviteUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/accept-invite/${inviteRawToken}`;
+        console.log('📧 Sending invite email to:', email, '| URL:', inviteUrl);
+        sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl })
+            .then(result => console.log('📧 Invite email result:', JSON.stringify(result)))
+            .catch(err => console.error('❌ Invite email threw:', err.message));
 
         const employeeId = employee._id;
         const companyObjectId = userCompany || getUserCompanyId(requestingUser);

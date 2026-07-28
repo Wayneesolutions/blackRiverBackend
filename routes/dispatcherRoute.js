@@ -39,6 +39,7 @@ import { loadValidation } from '../validations/load/load.validation.js'
 import {
   createCustomer,
   deleteCustomer,
+  importCustomers,
   listCustomers,
   searchCustomers,
   updateCustomer
@@ -369,6 +370,13 @@ dispatcherRoute.post(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr'),
   createCustomer
+)
+dispatcherRoute.post(
+  '/customer/import',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr'),
+  FileUploadMemory.single('file'),
+  importCustomers
 )
 dispatcherRoute.put(
   '/customer/:id',

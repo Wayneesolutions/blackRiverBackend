@@ -1,5 +1,6 @@
 import { Vehicle } from "../models/driver/vehicleModel.js";
 import { User } from "../models/driver/userModel.js";
+import Order from "../models/orderModel.js";
 import { getCoordinatesFromAddress } from "../services/googlemap.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
@@ -1361,6 +1362,20 @@ export const getVehiclesWithTracking = async (req, res) => {
       .limit(limitNum)
       .lean();
 
+    // Build a map of vehicleId → driver from active orders (source of truth)
+    const vehicleIds = vehicles.map(v => v._id);
+    const activeOrders = await Order.find({
+      truck: { $in: vehicleIds },
+      status: { $in: ['in-progress', 'in-delivery', 'planned', 'pending_completion'] }
+    }).populate('driver', 'name email phone').lean();
+
+    const vehicleDriverMap = {};
+    for (const order of activeOrders) {
+      if (order.truck && order.driver) {
+        vehicleDriverMap[order.truck.toString()] = order.driver;
+      }
+    }
+
     // Update each vehicle with live data from Samsara
     const vehiclesWithTracking = await Promise.all(vehicles.map(async (vehicle) => {
       if (vehicle.trackingKey) {
@@ -1373,6 +1388,7 @@ export const getVehiclesWithTracking = async (req, res) => {
             // Merge updated tracking data with vehicle data
             return {
               ...vehicle,
+              driver: vehicleDriverMap[vehicle._id.toString()] || vehicle.driver || null,
               speed: updatedData.speed || vehicle.speed || 0,
               fuelLevel: updatedData.fuelLevel || vehicle.fuelLevel || 0,
               odometer: updatedData.odometer || vehicle.odometer || 0,
@@ -1398,6 +1414,7 @@ export const getVehiclesWithTracking = async (req, res) => {
       // Return vehicle with existing data if no trackingKey or update failed
       return {
         ...vehicle,
+        driver: vehicleDriverMap[vehicle._id.toString()] || vehicle.driver || null,
         currentLocation: vehicle.currentLocation || {
           address: '',
           latitude: '0',
