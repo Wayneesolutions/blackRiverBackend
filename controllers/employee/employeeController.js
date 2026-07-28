@@ -2396,6 +2396,12 @@ export const importEmployees = async (req, res) => {
       const role = row.role || 'employee';
       const phone = row.phone || '';
       const department = row.department || '';
+      const jobTitle = row.job_title || '';
+      const city = row.city || '';
+      const country = row.country || '';
+      const gender = row.gender || '';
+      const dateOfBirth = row.date_of_birth || '';
+      const hireDate = row.hire_date || '';
       const csvEmployeeId = row.employee_id || '';
 
       if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required' }); continue; }
@@ -2421,14 +2427,23 @@ export const importEmployees = async (req, res) => {
           name,
           email,
           phone,
+          country: country || undefined,
+          city: city || undefined,
           role,
-          department,
           status: 'active',
           company: companyId,
           internalId,
           password: tempPassword,
           passwordResetToken: inviteHashedToken,
-          passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000
+          passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000,
+          dob: dateOfBirth ? new Date(dateOfBirth) : undefined,
+          details: {
+            department: department || undefined,
+            title: jobTitle || undefined,
+            gender: gender || undefined,
+            dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+            hireDate: hireDate ? new Date(hireDate) : undefined,
+          }
         });
         await employee.save({ validateBeforeSave: false });
 
