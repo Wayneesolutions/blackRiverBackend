@@ -3,6 +3,7 @@ import { hashPassword, comparePassword } from "../../services/bcrypt.js";
 import { getCoordinatesFromAddress } from "../../services/googlemap.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
+import { DeductionAddition, Settlement } from "../../models/hr/settlementModel.js";
 
 // ✅ Get Current User Profile (for all roles)
 export const getCurrentUserProfile = async (req, res) => {
@@ -768,6 +769,17 @@ export const deleteUser = async (req, res) => {
     const user = await User.findOneAndDelete(query);
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Cascade: remove all deductions/additions for this user and clean up settlement refs
+    const orphanedDeds = await DeductionAddition.find({ assignedTo: user._id }).select('_id').lean();
+    if (orphanedDeds.length > 0) {
+      const orphanIds = orphanedDeds.map(d => d._id);
+      await DeductionAddition.deleteMany({ _id: { $in: orphanIds } });
+      await Settlement.updateMany(
+        { appliedDeductions: { $in: orphanIds } },
+        { $pull: { appliedDeductions: { $in: orphanIds } } }
+      );
     }
 
     res.json({ success: true, message: "User deleted successfully" });

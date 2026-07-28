@@ -1363,10 +1363,12 @@ export const getVehiclesWithTracking = async (req, res) => {
       .lean();
 
     // Build a map of vehicleId → driver from active orders (source of truth)
+    // Excludes only terminal statuses; a truck/driver assignment is relevant for
+    // tracking at any non-final stage (quoted/planned/verification/in-delivery etc.)
     const vehicleIds = vehicles.map(v => v._id);
     const activeOrders = await Order.find({
       truck: { $in: vehicleIds },
-      status: { $in: ['in-progress', 'in-delivery', 'planned', 'pending_completion'] }
+      status: { $nin: ['delivered', 'completed', 'canceled'] }
     }).populate('driver', 'name email phone').lean();
 
     const vehicleDriverMap = {};

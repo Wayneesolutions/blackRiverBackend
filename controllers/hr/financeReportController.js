@@ -269,9 +269,18 @@ export const getFinanceReport = async (req, res) => {
     });
 
     // ===== OVERVIEW TOTALS =====
-    const totalRevenue  = truckWiseData.reduce((sum, t) => sum + t.revenue, 0);
+    // These must match the Accounts Dashboard's company-wide totals, so they're computed
+    // the same broad way here (all invoices/expenses/payroll for the company), not by
+    // summing truckWiseData — which only includes records tied to a specific truck and
+    // would silently drop revenue/expenses from orders without a truck assigned yet.
+    const totalRevenue  = invoices.reduce((sum, inv) => sum + normalizeAmount(inv.amount), 0);
     const totalPayroll  = payrolls.reduce((sum, p) => sum + normalizeAmount(p.totalSalary), 0);
-    const totalExpenses = truckWiseData.reduce((sum, t) => sum + t.expenses, 0);
+    const allExpenses = await Expense.find(matchFilter).lean();
+    const directExpenses = allExpenses.reduce((sum, exp) => sum + normalizeAmount(exp.amount), 0);
+    const allFuelCost = fuelReports.reduce((sum, f) => sum + normalizeAmount(f.transactionAmount || f.cost || 0), 0);
+    const allRepairs = await GeneralRepair.find({ ...matchFilter, amount: { $gt: 0 } }).lean();
+    const allRepairCost = allRepairs.reduce((sum, r) => sum + normalizeAmount(r.amount || 0), 0);
+    const totalExpenses = directExpenses + allFuelCost + allRepairCost + fleetInvTotal;
 
     // ===== INVOICE SUMMARY =====
     const invoiceSummary = {
