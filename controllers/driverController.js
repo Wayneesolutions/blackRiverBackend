@@ -5657,7 +5657,15 @@ export const importDrivers = async (req, res) => {
 
       const rawEmail = (row.email || '').toLowerCase().trim();
       const phone = row.phone || '';
+      const secondaryPhone = row.secondary_phone || '';
       const country = row.country || 'Canada';
+      const city = row.city || '';
+      const state = row.province_state || '';
+      const postalCode = row.postal_code || '';
+      const gender = row.gender || '';
+      const dateOfBirth = row.date_of_birth || '';
+      const hireDate = row.hire_date || '';
+      const notes = row.notes || '';
       const csvDriverId = row.driver_id || '';
 
       if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required (columns: name, or first_name + last_name)' }); continue; }
@@ -5695,11 +5703,22 @@ export const importDrivers = async (req, res) => {
           email,
           phone,
           country,
+          city: city || undefined,
+          state: state || undefined,
+          postalCode: postalCode || undefined,
           role: 'driver',
           status: row.status === 'inactive' ? 'inactive' : 'active',
           company: companyId,
           internalId,
           password: tempPassword,
+          dob: dateOfBirth ? new Date(dateOfBirth) : undefined,
+          details: {
+            gender: gender || undefined,
+            dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+            hireDate: hireDate ? new Date(hireDate) : undefined,
+            cell1: secondaryPhone || undefined,
+            remark: notes || undefined,
+          },
           ...(inviteHashedToken ? {
             passwordResetToken: inviteHashedToken,
             passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000

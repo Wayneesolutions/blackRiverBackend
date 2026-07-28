@@ -1555,6 +1555,13 @@ export const importVehicles = async (req, res) => {
       const internalId = row.internal_id || `TRK-${Date.now()}-${i}`;
       const type = row.type || '';
       const status = row.status || 'In Service';
+      const ownership = row.ownership || 'COMPANY ASSET';
+      const registrationCountry = row.registration_country || '';
+      const registrationProvince = row.registration_province || '';
+      const weight = row.weight || '';
+      const odometer = row.odometer ? Number(row.odometer) : undefined;
+      const serialNumber = row.serial_number || '';
+      const notes = row.notes || '';
 
       if (!plateNumber) { errors.push({ row: rowNum, data: row, reason: 'Plate number is required' }); continue; }
 
@@ -1565,13 +1572,20 @@ export const importVehicles = async (req, res) => {
       try {
         const vehicle = new Vehicle({
           plateNumber,
-          make,
-          model,
+          make: make || undefined,
+          model: model || undefined,
           year: year ? String(year) : undefined,
           vinNumber: vinNumber || undefined,
           internalId,
           type: type || undefined,
           status,
+          ownership,
+          registrationCountry: registrationCountry || undefined,
+          registrationProvince: registrationProvince || undefined,
+          weight: weight || undefined,
+          odometer: odometer || undefined,
+          serialNumber: serialNumber || undefined,
+          notes: notes || undefined,
           company: companyId
         });
         await vehicle.save();

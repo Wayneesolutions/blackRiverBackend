@@ -1403,9 +1403,15 @@ export const importTrailers = async (req, res) => {
       const make = row.make || '';
       const model = row.model || '';
       const year = row.year || '';
+      const vinNumber = row.vin || '';
       const type = row.type || '';
       const status = row.status || 'In Service';
-      const vinNumber = row.vin || '';
+      const ownership = row.ownership || 'COMPANY ASSET';
+      const registrationCountry = row.registration_country || '';
+      const registrationProvince = row.registration_province || '';
+      const weight = row.weight || '';
+      const capacity = row.capacity || '';
+      const notes = row.notes || '';
 
       if (!trailerNumber) { errors.push({ row: rowNum, data: row, reason: 'Trailer number is required' }); continue; }
 
@@ -1422,12 +1428,18 @@ export const importTrailers = async (req, res) => {
           trailer: trailerNumber,
           internalId: trailerNumber,
           plateNumber,
-          make,
-          model,
+          make: make || undefined,
+          model: model || undefined,
           year: year ? String(year) : undefined,
-          type: type || undefined,
           vinNumber: vinNumber || undefined,
+          type: type || undefined,
           status,
+          ownership,
+          registrationCountry: registrationCountry || undefined,
+          registrationProvince: registrationProvince || undefined,
+          weight: weight || undefined,
+          capacity: capacity || undefined,
+          notes: notes || undefined,
           company: companyId
         });
         await trailer.save();
