@@ -5,7 +5,8 @@ import { getUserCompanyId } from "../utils/companyFilter.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 import VehicleDocuments from "../models/driver/vehicleDocumentsModel.js";
-import { Subscription } from "../models/subscriptionModel.js"
+import { Subscription } from "../models/subscriptionModel.js";
+import { parseImportFile } from "../utils/importParser.js";
 
 
 // Helper function to process inspections with file uploads
@@ -1525,4 +1526,62 @@ const getDistance = (lat1, lon1, lat2, lon2) => {
     Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+};
+
+// ─── Bulk Import Trucks from CSV / Excel ────────────────────────────────────
+export const importVehicles = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
+    const companyId = getUserCompanyId(req.user) || req.user?.company;
+
+    const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
+    if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
+
+    let imported = 0, skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+
+      const plateNumber = row.plate_number || row.platenumber || row.plate || row.license_plate || '';
+      const make = row.make || row.manufacturer || '';
+      const model = row.model || '';
+      const year = row.year || '';
+      const vinNumber = row.vin || row.vin_number || row.vinnumber || '';
+      const internalId = row.internal_id || row.internalid || row.unit_number || row.unit || `TRK-${Date.now()}-${i}`;
+      const type = row.type || row.vehicle_type || '';
+      const status = row.status || 'In Service';
+
+      if (!plateNumber) { errors.push({ row: rowNum, data: row, reason: 'Plate number is required' }); continue; }
+
+      // Skip duplicate
+      const existing = await Vehicle.findOne({ plateNumber }).lean();
+      if (existing) { skipped++; continue; }
+
+      try {
+        const vehicle = new Vehicle({
+          plateNumber,
+          make,
+          model,
+          year: year ? String(year) : undefined,
+          vinNumber: vinNumber || undefined,
+          internalId,
+          type: type || undefined,
+          status,
+          company: companyId
+        });
+        await vehicle.save();
+        imported++;
+      } catch (saveErr) {
+        errors.push({ row: rowNum, data: row, reason: saveErr.message || 'Failed to save' });
+      }
+    }
+
+    res.json({ success: true, imported, skipped, errors, total: rows.length });
+  } catch (error) {
+    console.error('importVehicles error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Import failed' });
+  }
 };

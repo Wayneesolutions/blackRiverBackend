@@ -55,6 +55,7 @@
     "stripe": "^18.5.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "xlsx": "^0.18.5",
     "xss-clean": "^0.1.4"
   }
 }

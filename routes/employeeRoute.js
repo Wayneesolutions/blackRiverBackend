@@ -8,7 +8,8 @@ import {
     deleteEmployee,
     bulkDeleteEmployees,
     getEmployeeStats,
-    resetEmployeePassword
+    resetEmployeePassword,
+    importEmployees
 } from "../controllers/employee/employeeController.js";
 import {
     createEmployeeValidation,
@@ -19,10 +20,19 @@ import {
 } from "../validations/employee/employee.validation.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { authorizeRoles } from "../middleware/authRoles.js";
-import { FileUpload } from "../middleware/upload.js";
+import { FileUpload, FileUploadMemory } from "../middleware/upload.js";
 const employeeRoute = express.Router();
 
 // ✅ EMPLOYEE MANAGEMENT ROUTES
+
+// Bulk import employees from CSV / Excel
+employeeRoute.post(
+    "/import",
+    authMiddleware,
+    authorizeRoles('admin', 'superadmin', 'hr'),
+    FileUploadMemory.single('file'),
+    importEmployees
+);
 
 // Create new employee
 employeeRoute.post(

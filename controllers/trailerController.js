@@ -3,6 +3,7 @@ import { getCoordinatesFromAddress } from "../services/googlemap.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 import VehicleDocuments from "../models/driver/vehicleDocumentsModel.js";
+import { parseImportFile } from "../utils/importParser.js";
 
 // Helper function to generate signed URL for S3 images
 const generateSignedUrl = async (url) => {
@@ -1375,5 +1376,68 @@ export const selectedTrailor = async (req, res) => {
       message: "Server error",
       error: error.message
     });
+  }
+};
+
+// ─── Bulk Import Trailers from CSV / Excel ───────────────────────────────────
+export const importTrailers = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
+    const companyId = getUserCompanyId(req.user) || req.user?.company;
+
+    const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
+    if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
+
+    let imported = 0, skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+
+      const trailerNumber = row.trailer_number || row.trailernumber || row.trailer || row.unit_number || row.unit || '';
+      const plateNumber = row.plate_number || row.platenumber || row.plate || row.license_plate || `PLT-${Date.now()}-${i}`;
+      const make = row.make || row.manufacturer || '';
+      const model = row.model || '';
+      const year = row.year || '';
+      const type = row.type || row.trailer_type || '';
+      const status = row.status || 'In Service';
+      const vinNumber = row.vin || row.vin_number || '';
+
+      if (!trailerNumber) { errors.push({ row: rowNum, data: row, reason: 'Trailer number is required' }); continue; }
+
+      // Skip duplicate by trailer number (field: `trailer` in model)
+      const existing = await Trailer.findOne({ trailer: trailerNumber, company: companyId }).lean();
+      if (existing) { skipped++; continue; }
+
+      // Also check plateNumber uniqueness
+      const dupPlate = plateNumber && !plateNumber.startsWith('PLT-') ? await Trailer.findOne({ plateNumber }).lean() : null;
+      if (dupPlate) { skipped++; continue; }
+
+      try {
+        const trailer = new Trailer({
+          trailer: trailerNumber,
+          internalId: trailerNumber,
+          plateNumber,
+          make,
+          model,
+          year: year ? String(year) : undefined,
+          type: type || undefined,
+          vinNumber: vinNumber || undefined,
+          status,
+          company: companyId
+        });
+        await trailer.save();
+        imported++;
+      } catch (saveErr) {
+        errors.push({ row: rowNum, data: row, reason: saveErr.message || 'Failed to save' });
+      }
+    }
+
+    res.json({ success: true, imported, skipped, errors, total: rows.length });
+  } catch (error) {
+    console.error('importTrailers error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Import failed' });
   }
 };

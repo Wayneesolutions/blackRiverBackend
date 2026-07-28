@@ -5,7 +5,8 @@ import {
   getVehicleById,
   getVehicles,
   getVehiclesWithTracking,
-  updateVehicle
+  updateVehicle,
+  importVehicles
 } from '../controllers/vehicleController.js'
 import { FileUpload, FileUploadMemory } from '../middleware/upload.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
@@ -42,7 +43,7 @@ import {
   searchCustomers,
   updateCustomer
 } from '../controllers/customerController.js'
-import { getAllDrivers } from '../controllers/driverController.js'
+import { getAllDrivers, importDrivers } from '../controllers/driverController.js'
 import { getAllFaciliators } from '../controllers/user/userController.js'
 import {
   createIssue,
@@ -68,7 +69,8 @@ import {
   getTrailerStats,
   updateTrailerStatus,
   selectedTrailor,
-  getTrailersWithTracking
+  getTrailersWithTracking,
+  importTrailers
 } from '../controllers/trailerController.js'
 import {
   createFleet,
@@ -632,6 +634,27 @@ dispatcherRoute.get(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager'),
   getAllDrivers
+)
+dispatcherRoute.post(
+  '/driver/import',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr'),
+  FileUploadMemory.single('file'),
+  importDrivers
+)
+dispatcherRoute.post(
+  '/vehicle/import',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager'),
+  FileUploadMemory.single('file'),
+  importVehicles
+)
+dispatcherRoute.post(
+  '/trailer/import',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager'),
+  FileUploadMemory.single('file'),
+  importTrailers
 )
 dispatcherRoute.get(
   '/customer',

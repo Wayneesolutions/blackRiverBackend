@@ -11,6 +11,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import mongoose from "mongoose";
 import { s3 } from "../../config/awsConfig.js";
 import { sendEmployeeInviteEmail } from "../../services/emailService.js";
+import { parseImportFile } from "../../utils/importParser.js";
 
 // ✅ CREATE EMPLOYEE
 export const createEmployee = async (req, res) => {
@@ -2362,4 +2363,82 @@ export const resetEmployeePassword = async (req, res) => {
             error: error.message
         });
     }
+};
+
+// ─── Bulk Import Employees from CSV / Excel ──────────────────────────────────
+export const importEmployees = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+
+    const companyId = getUserCompanyId(req.user) || req.user?.company;
+    if (!companyId && req.user?.role !== 'superadmin') {
+      return res.status(400).json({ success: false, message: 'Company settings not found.' });
+    }
+
+    const VALID_ROLES = ['admin', 'dispatcher', 'hr', 'accountant', 'Fleet Maintenance Manager', 'employee'];
+
+    const { rows } = parseImportFile(req.file.buffer, req.file.originalname);
+    if (!rows.length) return res.status(400).json({ success: false, message: 'File is empty or has no data rows.' });
+
+    let imported = 0, skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+
+      const name = row.name || row.full_name || row.employee_name || '';
+      const email = (row.email || row.email_address || '').toLowerCase();
+      const role = row.role || row.position || 'employee';
+      const phone = row.phone || row.phone_number || row.mobile || '';
+      const department = row.department || '';
+
+      if (!name) { errors.push({ row: rowNum, data: row, reason: 'Name is required' }); continue; }
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errors.push({ row: rowNum, data: row, reason: 'Valid email is required' }); continue;
+      }
+      if (!VALID_ROLES.includes(role)) {
+        errors.push({ row: rowNum, data: row, reason: `Role "${role}" is invalid. Valid roles: ${VALID_ROLES.join(', ')}` }); continue;
+      }
+
+      const existing = await User.findOne({ email, company: companyId }).lean();
+      if (existing) { skipped++; continue; }
+
+      const inviteRawToken = crypto.randomBytes(32).toString('hex');
+      const inviteHashedToken = crypto.createHash('sha256').update(inviteRawToken).digest('hex');
+      const tempPassword = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
+
+      const timestamp = Date.now().toString().slice(-6);
+      const internalId = `EMP-${timestamp}-${i}`;
+
+      try {
+        const employee = new User({
+          name,
+          email,
+          phone,
+          role,
+          department,
+          status: 'active',
+          company: companyId,
+          internalId,
+          password: tempPassword,
+          passwordResetToken: inviteHashedToken,
+          passwordResetExpires: Date.now() + 72 * 60 * 60 * 1000
+        });
+        await employee.save({ validateBeforeSave: false });
+
+        const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite/${inviteRawToken}`;
+        sendEmployeeInviteEmail({ employeeEmail: email, employeeName: name, inviteUrl }).catch(() => {});
+
+        imported++;
+      } catch (saveErr) {
+        errors.push({ row: rowNum, data: row, reason: saveErr.message || 'Failed to save' });
+      }
+    }
+
+    res.json({ success: true, imported, skipped, errors, total: rows.length });
+  } catch (error) {
+    console.error('importEmployees error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Import failed' });
+  }
 };
