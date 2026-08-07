@@ -297,7 +297,6 @@ tripSchema.pre('save', async function (next) {
 tripSchema.index({ company: 1, status: 1 });
 tripSchema.index({ driver: 1, status: 1 });
 tripSchema.index({ truck: 1, status: 1 });
-tripSchema.index({ tripNumber: 1 });
 tripSchema.index({ plannedStartDate: 1 });
 
 const Trip = mongoose.model('Trip', tripSchema);

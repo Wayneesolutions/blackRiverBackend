@@ -52,7 +52,6 @@ const fleetCustomerSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-fleetCustomerSchema.index({ company: 1 });
 fleetCustomerSchema.index({ email: 1, company: 1 });
 
 export default mongoose.model('FleetCustomer', fleetCustomerSchema);

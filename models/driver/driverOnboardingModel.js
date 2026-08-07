@@ -77,7 +77,6 @@ const driverOnboardingSchema = new mongoose.Schema({
 });
 
 // Index for efficient queries
-driverOnboardingSchema.index({ driverId: 1 });
 driverOnboardingSchema.index({ company: 1 });
 driverOnboardingSchema.index({ onboardingStatus: 1 });
 
