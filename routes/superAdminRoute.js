@@ -7,7 +7,8 @@ import {
   createAdmin,
   deleteAdmin,
   getAllAdmins,
-  updateAdmin
+  updateAdmin,
+  assignPlanToAdmin
 } from '../controllers/adminManageController.js'
 import {
   createPlan,
@@ -67,6 +68,13 @@ superAdminRoute.delete(
   authMiddleware,
   authorizeRoles('superadmin', 'hr'),
   deleteAdmin
+)
+
+superAdminRoute.post(
+  '/admin/:id/assign-plan',
+  authMiddleware,
+  authorizeRoles('superadmin'),
+  assignPlanToAdmin
 )
 
 // Plan management

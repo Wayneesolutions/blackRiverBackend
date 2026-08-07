@@ -335,22 +335,25 @@ adminRoute.put(
 adminRoute.put(
   '/company/maintenance-policy',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
   updateMaintenancePolicy
 )
 
 // GPS Tracking & Vehicle Telematics (Geotab Data)
+// Read-only for every department (view-only GPS dashboard) — no mutation endpoints exist for this data.
+const gpsViewRoles = ['admin', 'superadmin', 'dispatcher', 'hr', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'Maintenance Crew (Mechanics)'];
+
 adminRoute.get(
   '/vehicles/live',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher'),
+  authorizeRoles(...gpsViewRoles),
   getLiveVehicles
 )
 
 adminRoute.get(
   '/vehicles/list',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher'),
+  authorizeRoles(...gpsViewRoles),
   getVehicleList
 )
 
@@ -358,15 +361,15 @@ adminRoute.get(
 adminRoute.get(
   '/vehicle-details/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher'),
-  
+  authorizeRoles(...gpsViewRoles),
+
   getVehicleDetails
 )
 
 adminRoute.get(
   '/gps-vehicle/dashboard-stats',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager'),
+  authorizeRoles(...gpsViewRoles),
   getGpsVehicleDashboardStats
 )
 
@@ -484,22 +487,24 @@ adminRoute.post(
   FileUploadMemory.single('file'),
   uploadAndExtractFleetInvoice
 )
+// Read-only: Accounts needs to see fleet invoices for billing/expense tracking/financial reporting,
+// but only Fleet Maintenance Manager/admin/superadmin can create/edit/delete/email them.
 adminRoute.get(
   '/fleet-invoices',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
   getFleetInvoices
 )
 adminRoute.get(
   '/fleet-invoices/summary',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
   getFleetInvoiceSummary
 )
 adminRoute.get(
   '/fleet-invoices/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
   getFleetInvoiceById
 )
 adminRoute.post(

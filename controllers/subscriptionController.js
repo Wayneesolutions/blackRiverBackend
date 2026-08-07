@@ -13,6 +13,12 @@ if (process.env.STRIPE_SECRET_KEY) {
   console.warn('⚠️ STRIPE_SECRET_KEY not found in environment variables');
 }
 
+// Self-service plan browsing/checkout is disabled by client request — all plan assignment now
+// goes through the Super Admin (see assignPlanToAdmin in adminManageController.js). The Stripe
+// integration below is left intact and can be re-enabled by setting this env var, rather than
+// deleted, in case self-service checkout is wanted again later or for a specific customer.
+const SELF_SERVICE_CHECKOUT_ENABLED = process.env.ENABLE_SELF_SERVICE_CHECKOUT === 'true';
+
 // ✅ Get All Plans (for admin to view available plans)
 export const getAllPlans = async (req, res) => {
   try {
@@ -136,6 +142,12 @@ export const getMySubscriptions = async (req, res) => {
 // ✅ Create Subscription Checkout Session
 export const createCheckoutSession = async (req, res) => {
   try {
+    if (!SELF_SERVICE_CHECKOUT_ENABLED) {
+      return res.status(403).json({
+        success: false,
+        message: "Self-service plan changes are disabled. Please contact your account manager."
+      });
+    }
 
     console.log("create checkout session ..............");
     const { planId, subscriptionType, truckCount } = req.body;
@@ -613,7 +625,7 @@ export const verifyCheckoutSession = async (req, res) => {
 
 // calculate pricing 
 
-const calculateTruckPricing = (truckCount, pricing) => {
+export const calculateTruckPricing = (truckCount, pricing) => {
   const tier = pricing.tiers.find(
     t => truckCount >= t.minTrucks && truckCount <= t.maxTrucks
   );
@@ -633,6 +645,13 @@ const calculateTruckPricing = (truckCount, pricing) => {
 
 export const extraTruckCheckoutSession = async(req,res)=>{
   try {
+      if (!SELF_SERVICE_CHECKOUT_ENABLED) {
+        return res.status(403).json({
+          success: false,
+          message: "Self-service plan changes are disabled. Please contact your account manager."
+        });
+      }
+
       const {extraTruck =1,planId} = req.body
        const adminId = req.user._id;
       const adminEmail = req.user.email;

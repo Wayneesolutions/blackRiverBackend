@@ -91,7 +91,10 @@ const userSchema = new mongoose.Schema({
   trialEndDate: { type: Date, default: null },
   trialEmailSent: { type: Boolean, default: false },
   trialExpiredEmailSent: { type: Boolean, default: false },
-  
+  // Global default trial length (days), configurable by Super Admin. Only meaningful
+  // on the superadmin's own user document — read as a system-wide setting.
+  defaultTrialDays: { type: Number, default: null },
+
   // Driver Specific Details (based on createDriver fields)
   details: {
     // Employee-specific fields (for all roles)
@@ -99,7 +102,9 @@ const userSchema = new mongoose.Schema({
     department: { type: String },
     jobType: { type: String },
     jobTime: { type: String, enum: ['FULL-TIME', 'PART-TIME', 'CONTRACT', 'TEMPORARY'] },
-    payType: { type: String, enum: ['Hourly', 'Salary', 'Commission', 'Per Trip', 'Per Mile'] },
+    // 'Biweekly'/'SemiMonthly'/'Monthly' are the Employee module's actual dropdown options
+    // (pay frequency); 'Salary'/'Commission'/'Per Trip'/'Per Mile' are used elsewhere.
+    payType: { type: String, enum: ['Hourly', 'Salary', 'Commission', 'Per Trip', 'Per Mile', 'Biweekly', 'SemiMonthly', 'Monthly'] },
     payRate: { type: Number },
     
     // Basic Driver Information (used in createDriver)
