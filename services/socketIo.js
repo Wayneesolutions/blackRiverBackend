@@ -783,6 +783,12 @@ export const initSocket = (server) => {
           return;
         }
 
+        // Guard against race condition: socket auth can arrive before MongoDB is ready
+        if (mongoose.connection.readyState !== 1) {
+          socket.emit("auth_error", { message: "Database not ready, please retry" });
+          return;
+        }
+
         // Find user
         const user = await User.findById(decoded.id)
           .populate('company', '_id')
