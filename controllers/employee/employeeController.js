@@ -300,6 +300,11 @@ export const createEmployee = async (req, res) => {
         }
         if (payType) employeeData.details.payType = payType;
         if (payRate !== undefined && payRate !== '') employeeData.details.payRate = Number(payRate);
+        // Payroll calculations read details.hourlyRate, not details.payRate — keep them in sync
+        // whenever the Employee module's "Pay Rate" field represents an hourly wage.
+        if (payType === 'Hourly' && payRate !== undefined && payRate !== '') {
+            employeeData.details.hourlyRate = Number(payRate);
+        }
         if (notes) {
             // Convert array to string if needed (schema expects string)
             if (Array.isArray(notes)) {
@@ -362,7 +367,11 @@ export const createEmployee = async (req, res) => {
                 mileRateTeam: mileRateTeam || 0,
                 emptyMileRate: emptyMileRate || 0,
                 emptyMileRateTeam: emptyMileRateTeam || 0,
-                hourlyRate: hourlyRate || 0,
+                // Prefer an explicit hourlyRate (from the Driver-management form) when given;
+                // otherwise keep whatever was just derived from the Employee module's Pay Rate field above.
+                hourlyRate: (hourlyRate !== undefined && hourlyRate !== null && hourlyRate !== '')
+                    ? Number(hourlyRate)
+                    : (employeeData.details.hourlyRate ?? 0),
                 weightRate: weightRate || 0,
                 percentageRate: percentageRate || 0,
                 localTaxNo,
@@ -1489,6 +1498,11 @@ export const updateEmployee = async (req, res) => {
         if (payRate !== undefined && payRate !== null && payRate !== '') {
             updateData.details.payRate = Number(payRate);
         }
+        // Payroll calculations read details.hourlyRate, not details.payRate — keep them in sync
+        // whenever the Employee module's "Pay Rate" field represents an hourly wage.
+        if (payType === 'Hourly' && payRate !== undefined && payRate !== null && payRate !== '') {
+            updateData.details.hourlyRate = Number(payRate);
+        }
         if (vacationPay !== undefined && vacationPay !== null && vacationPay !== '') {
             updateData.details.vacationPay = vacationPay;
         }
@@ -1563,13 +1577,20 @@ export const updateEmployee = async (req, res) => {
                 defaultRemarks: defaultRemarks || '',
                 defaultPayrollType: defaultPayrollType || '',
                 paymentCurrency: paymentCurrency || '',
-                mileRate: parseNumber(mileRate, 0),
-                mileRateTeam: parseNumber(mileRateTeam, 0),
-                emptyMileRate: parseNumber(emptyMileRate, 0),
-                emptyMileRateTeam: parseNumber(emptyMileRateTeam, 0),
-                hourlyRate: parseNumber(hourlyRate, 0),
-                weightRate: parseNumber(weightRate, 0),
-                percentageRate: parseNumber(percentageRate, 0),
+                // These rate fields fall back to the existing stored value (not 0) when not provided
+                // in this request, so an unrelated edit (e.g. just a phone number) doesn't wipe them out.
+                mileRate: parseNumber(mileRate, existingEmployee.details?.mileRate ?? 0),
+                mileRateTeam: parseNumber(mileRateTeam, existingEmployee.details?.mileRateTeam ?? 0),
+                emptyMileRate: parseNumber(emptyMileRate, existingEmployee.details?.emptyMileRate ?? 0),
+                emptyMileRateTeam: parseNumber(emptyMileRateTeam, existingEmployee.details?.emptyMileRateTeam ?? 0),
+                // Prefer an explicit hourlyRate (from the Driver-management form) when given; otherwise
+                // keep whatever was just derived from the Employee module's Pay Rate field above; otherwise
+                // keep the previously stored value so this update doesn't wipe it.
+                hourlyRate: (hourlyRate !== undefined && hourlyRate !== null && hourlyRate !== '')
+                    ? Number(hourlyRate)
+                    : (updateData.details.hourlyRate ?? existingEmployee.details?.hourlyRate ?? 0),
+                weightRate: parseNumber(weightRate, existingEmployee.details?.weightRate ?? 0),
+                percentageRate: parseNumber(percentageRate, existingEmployee.details?.percentageRate ?? 0),
                 localTaxNo: localTaxNo || '',
                 federalTaxNo: federalTaxNo || '',
                 sinNo: sinNo || '',

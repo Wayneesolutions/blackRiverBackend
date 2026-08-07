@@ -337,6 +337,7 @@ export const getComplianceDashboardData = async (req, res) => {
             vehiclesUnderRepair: 0,
             vehiclesWithPendingService: 0
           },
+          assetCounts: { trucks: 0, trailers: 0, drivers: 0, gpsOnline: 0 },
           safetyAlerts: [],
           pmStatus: [],
           invoiceSummary: {
@@ -884,10 +885,25 @@ export const getComplianceDashboardData = async (req, res) => {
       vehiclesWithPendingService
     };
 
+    // Headline asset counts for the dashboard stat cards
+    const driverCount = await User.countDocuments({ role: 'driver', ...filter });
+    const gpsRecentThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const gpsOnline =
+      vehicles.filter(v => v.currentLocation?.updatedAt && new Date(v.currentLocation.updatedAt) >= gpsRecentThreshold).length +
+      trailers.filter(t => t.currentLocation?.updatedAt && new Date(t.currentLocation.updatedAt) >= gpsRecentThreshold).length;
+
+    const assetCounts = {
+      trucks: vehicles.length,
+      trailers: trailers.length,
+      drivers: driverCount,
+      gpsOnline
+    };
+
     return res.json({
       success: true,
       data: {
         fleetOperational,
+        assetCounts,
         safetyAlerts,
         pmStatus,
         invoiceSummary,

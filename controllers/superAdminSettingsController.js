@@ -33,7 +33,8 @@ export const getSuperAdminSettings = async (req, res) => {
         status: superAdmin.status || 'active',
         joinDate: superAdmin.joinDate || null,
         createdAt: superAdmin.createdAt || null,
-        updatedAt: superAdmin.updatedAt || null
+        updatedAt: superAdmin.updatedAt || null,
+        defaultTrialDays: superAdmin.defaultTrialDays ?? null
       }
     });
   } catch (error) {
@@ -50,7 +51,7 @@ export const getSuperAdminSettings = async (req, res) => {
 export const updateSuperAdminSettings = async (req, res) => {
   try {
     const superAdminId = req.user._id;
-    const { name, email, phone, country, state, city, address, policies, password, newPassword } = req.body;
+    const { name, email, phone, country, state, city, address, policies, password, newPassword, defaultTrialDays } = req.body;
 
     const superAdmin = await User.findById(superAdminId);
 
@@ -82,6 +83,9 @@ export const updateSuperAdminSettings = async (req, res) => {
       ...(state !== undefined && { state }),
       ...(city !== undefined && { city }),
       ...(policies !== undefined && { policies }),
+      ...(defaultTrialDays !== undefined && {
+        defaultTrialDays: defaultTrialDays === null || defaultTrialDays === '' ? null : Number(defaultTrialDays)
+      }),
       ...(address !== undefined && {
         location: {
           address,
@@ -150,7 +154,8 @@ export const updateSuperAdminSettings = async (req, res) => {
         policies: updatedSuperAdmin.policies || '',
         status: updatedSuperAdmin.status || 'active',
         joinDate: updatedSuperAdmin.joinDate || null,
-        updatedAt: updatedSuperAdmin.updatedAt || null
+        updatedAt: updatedSuperAdmin.updatedAt || null,
+        defaultTrialDays: updatedSuperAdmin.defaultTrialDays ?? null
       }
     });
   } catch (error) {

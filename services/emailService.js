@@ -702,13 +702,17 @@ export const sendTrialStartEmail = async ({
           month: 'long',
           day: 'numeric'
         })
-      : '7 days from now';
+      : '1 month from now';
 
-    const daysRemaining = trialEndDate 
+    const daysRemaining = trialEndDate
       ? Math.ceil((new Date(trialEndDate) - new Date()) / (1000 * 60 * 60 * 24))
-      : 7;
+      : 30;
 
-    const subject = `🎉 Your 7-Day Free Trial Has Started!`;
+    const trialLengthDays = (trialStartDate && trialEndDate)
+      ? Math.round((new Date(trialEndDate) - new Date(trialStartDate)) / (1000 * 60 * 60 * 24))
+      : daysRemaining;
+
+    const subject = `🎉 Your ${trialLengthDays}-Day Free Trial Has Started!`;
     
     const htmlContent = `
       <!DOCTYPE html>
@@ -800,7 +804,7 @@ export const sendTrialStartEmail = async ({
           <div class="content">
             <p>Hello <strong>${adminName}</strong>,</p>
             
-            <p>Congratulations! Your 7-day free trial period has officially started. You now have full access to all features of our platform.</p>
+            <p>Congratulations! Your ${trialLengthDays}-day free trial period has officially started. You now have full access to all features of our platform.</p>
             
             <div class="info-box">
               <div class="info-row">
@@ -850,7 +854,7 @@ Your Free Trial Has Started!
 
 Hello ${adminName},
 
-Congratulations! Your 7-day free trial period has officially started. You now have full access to all features of our platform.
+Congratulations! Your ${trialLengthDays}-day free trial period has officially started. You now have full access to all features of our platform.
 
 Trial Start Date: ${trialStartFormatted}
 Trial End Date: ${trialEndFormatted}
@@ -1007,7 +1011,7 @@ export const sendTrialExpiredEmail = async ({
           <div class="content">
             <p>Hello <strong>${adminName}</strong>,</p>
             
-            <p>Your 7-day free trial period has expired on <strong>${trialEndFormatted}</strong>.</p>
+            <p>Your free trial period has expired on <strong>${trialEndFormatted}</strong>.</p>
             
             <div class="warning-box">
               <p style="margin: 0; font-weight: bold; color: #92400e;">
@@ -1048,7 +1052,7 @@ Your Free Trial Has Expired
 
 Hello ${adminName},
 
-Your 7-day free trial period has expired on ${trialEndFormatted}.
+Your free trial period has expired on ${trialEndFormatted}.
 
 ⚠️ Your access to the platform has been restricted. To continue using all features, please subscribe to a plan.
 

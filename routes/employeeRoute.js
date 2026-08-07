@@ -51,7 +51,7 @@ employeeRoute.post(
 employeeRoute.get(
     "/",
     authMiddleware,
-    authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer'),
+    authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'accountant', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
     getAllEmployees
 );
 
@@ -67,7 +67,7 @@ employeeRoute.get(
 employeeRoute.get(
     "/:id",
     authMiddleware,
-    authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer'),
+    authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'accountant', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
     getEmployeeById
 );
 

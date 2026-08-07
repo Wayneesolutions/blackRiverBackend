@@ -3,11 +3,38 @@ import { Subscription } from "../models/subscriptionModel.js";
 import { sendTrialStartEmail, sendTrialExpiredEmail } from "../services/emailService.js";
 
 /**
- * Start 7-day free trial for an admin user
+ * Resolve how many days a trial should run for, when the caller hasn't
+ * specified an explicit value: falls back to the Super Admin's configured
+ * `defaultTrialDays` (read from the earliest-created superadmin user), then to 30.
+ * @param {Number|undefined|null} explicitDays
+ * @returns {Promise<Number>}
+ */
+export const resolveDefaultTrialDays = async (explicitDays) => {
+  if (explicitDays !== undefined && explicitDays !== null && Number(explicitDays) > 0) {
+    return Number(explicitDays);
+  }
+  try {
+    const superAdmin = await User.findOne({ role: 'superadmin', defaultTrialDays: { $ne: null } })
+      .sort({ createdAt: 1 })
+      .select('defaultTrialDays')
+      .lean();
+    if (superAdmin?.defaultTrialDays > 0) {
+      return superAdmin.defaultTrialDays;
+    }
+  } catch (err) {
+    console.error('Error resolving default trial days:', err);
+  }
+  return 30;
+};
+
+/**
+ * Start a free trial for an admin user
  * @param {String} adminId - Admin user ID
+ * @param {Number} [trialDays] - Trial length in days. If omitted, resolves the
+ *   Super Admin's configured default (falling back to 30).
  * @returns {Promise<Object>} Trial information
  */
-export const startTrial = async (adminId) => {
+export const startTrial = async (adminId, trialDays) => {
   try {
     const admin = await User.findById(adminId);
     if (!admin) {
@@ -21,8 +48,8 @@ export const startTrial = async (adminId) => {
 
     // Check if trial already started
     if (admin.trialStartDate) {
-      return { 
-        success: true, 
+      return {
+        success: true,
         message: 'Trial already started',
         trialStartDate: admin.trialStartDate,
         trialEndDate: admin.trialEndDate
@@ -36,20 +63,22 @@ export const startTrial = async (adminId) => {
     });
 
     if (activeSubscription) {
-      return { 
-        success: false, 
-        message: 'Admin already has an active subscription' 
+      return {
+        success: false,
+        message: 'Admin already has an active subscription'
       };
     }
 
-    // Start trial: 7 days from now
+    const resolvedTrialDays = await resolveDefaultTrialDays(trialDays);
+
+    // Start trial: resolvedTrialDays from now
     // Set start date to beginning of today
     const trialStartDate = new Date();
     trialStartDate.setHours(0, 0, 0, 0);
-    
-    // Set end date to end of day, 7 days from now
+
+    // Set end date to end of day, resolvedTrialDays from now
     const trialEndDate = new Date();
-    trialEndDate.setDate(trialEndDate.getDate() + 7);
+    trialEndDate.setDate(trialEndDate.getDate() + resolvedTrialDays);
     trialEndDate.setHours(23, 59, 59, 999);
 
     // Update admin with trial dates

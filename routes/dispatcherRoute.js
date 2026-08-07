@@ -640,7 +640,7 @@ dispatcherRoute.get(
 dispatcherRoute.get(
   '/driver',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accountant', 'safety officer', 'Maintenance Crew (Mechanics)'),
   getAllDrivers
 )
 dispatcherRoute.post(
@@ -693,7 +693,7 @@ dispatcherRoute.get(
 dispatcherRoute.get(
   '/vehicle/tracking',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant', 'safety officer', 'Maintenance Crew (Mechanics)'),
   getVehiclesWithTracking
 )
 dispatcherRoute.get(

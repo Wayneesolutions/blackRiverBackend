@@ -6,6 +6,8 @@ import { User } from "../../models/driver/userModel.js";
 import FuelReport from "../../models/driver/fuelReportsModel.js";
 import { GeneralRepair } from "../../models/fleet/generalRepairModel.js";
 import { FleetInvoice } from "../../models/driver/fleetInvoiceModel.js";
+import { Vehicle } from "../../models/driver/vehicleModel.js";
+import { Trailer } from "../../models/driver/trailerModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
 
@@ -31,7 +33,8 @@ export const getAccountsDashboard = async (req, res) => {
           vendorPayment: 0,
           invoiceCount: 0,
           expenseCount: 0,
-          payrollCount: 0
+          payrollCount: 0,
+          fleetCounts: { drivers: 0, employees: 0, trucks: 0, trailers: 0 }
         },
         message: "Please complete company settings first to view statistics."
       });
@@ -313,6 +316,19 @@ export const getAccountsDashboard = async (req, res) => {
     // This includes drivers without any payroll records
     const driverUnpaidCount = Math.max(0, totalDriverCount - driversWithPayroll.size);
 
+    // === FLEET COUNTS (Trucks, Trailers) ===
+    const fleetFilter = isSuperadmin ? {} : { company: companyId };
+    const [truckCount, trailerCount] = await Promise.all([
+      Vehicle.countDocuments(fleetFilter),
+      Trailer.countDocuments(fleetFilter)
+    ]);
+    const fleetCounts = {
+      drivers: totalDriverCount,
+      employees: totalEmployeeCount,
+      trucks: truckCount,
+      trailers: trailerCount
+    };
+
     // === NET PROFIT ===
     const netProfit = totalRevenue - totalExpenses - totalPayroll;
 
@@ -337,7 +353,8 @@ export const getAccountsDashboard = async (req, res) => {
       employeePaidCount,
       employeeUnpaidCount,
       driverPaidCount,
-      driverUnpaidCount
+      driverUnpaidCount,
+      fleetCounts
     };
     
     console.log('📊 [Accounts Dashboard] Final response data:', {
