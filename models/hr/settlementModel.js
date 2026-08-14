@@ -125,6 +125,11 @@ const deductionAdditionSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  amountType: {
+    type: String,
+    enum: ['flat', 'percentage'],
+    default: 'flat'
+  },
   currency: {
     type: String,
     enum: ['CAD', 'USD'],

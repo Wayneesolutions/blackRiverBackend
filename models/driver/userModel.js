@@ -35,11 +35,9 @@ const userSchema = new mongoose.Schema({
   internalId: {
     type: String,
     required: function() {
-      // internalId is required for driver role only
       return this.role === 'driver';
     },
-    unique: true,
-    sparse: true // Allow multiple null/undefined values for unique index
+    sparse: true
   },
   
   // Location Information
@@ -84,6 +82,13 @@ const userSchema = new mongoose.Schema({
   // Password Reset
   passwordResetToken: { type: String },
   passwordResetExpires: { type: Date },
+
+  // Advanced portal permissions (granted by admin, independent of role)
+  portals: {
+    type: [String],
+    enum: ['dispatch_load', 'gps', 'human_resource', 'fleet_maintenance', 'mechanic', 'compliance', 'accounts', 'health_safety', 'manifest'],
+    default: []
+  },
 
   // Stripe & Subscription (for admin users)
   stripeCustomerId: { type: String, default: null },
@@ -183,9 +188,10 @@ const userSchema = new mongoose.Schema({
     paymentPostalCode: { type: String },
     paymentCountry: { type: String },
     paymentStateProvince: { type: String },
-    driverTypeSolo: { type: Boolean, default: true }, // true = SOLO, false = TEAM
+    driverTypeSolo: { type: String, default: 'SOLO' }, // 'SOLO', 'TEAM', or 'BOTH'
     cross_border_eligible: { type: Boolean, default: false }, // Cross-border eligibility
-    
+    safetyBonus: { type: Number, default: 0 }, // Safety bonus per payroll period
+
     // Payroll Settings
     payPeriod: { type: String },
     vacationPay: { type: String },
@@ -287,5 +293,7 @@ const userSchema = new mongoose.Schema({
   timestamps: true,
   strict: true // Only save fields defined in schema
 });
+
+userSchema.index({ internalId: 1, company: 1 }, { unique: true, sparse: true });
 
 export const User = mongoose.model('User', userSchema);

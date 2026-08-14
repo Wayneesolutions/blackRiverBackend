@@ -9,7 +9,8 @@ import {
     bulkDeleteEmployees,
     getEmployeeStats,
     resetEmployeePassword,
-    importEmployees
+    importEmployees,
+    updateEmployeePortals
 } from "../controllers/employee/employeeController.js";
 import {
     createEmployeeValidation,
@@ -117,6 +118,14 @@ employeeRoute.delete(
     authorizeRoles('admin', 'superadmin', 'hr'),
     bulkDeleteValidation,
     bulkDeleteEmployees
+);
+
+// Update employee portal permissions (Advanced Permissions)
+employeeRoute.patch(
+    "/:id/portals",
+    authMiddleware,
+    authorizeRoles('admin', 'superadmin'),
+    updateEmployeePortals
 );
 
 export default employeeRoute;

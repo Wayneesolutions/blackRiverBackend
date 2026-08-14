@@ -11,6 +11,7 @@ import {
 import { FileUpload, FileUploadMemory } from '../middleware/upload.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { authorizeRoles } from '../middleware/authRoles.js'
+import { checkTrialAccess } from '../middleware/checkTrial.js'
 import {
   getRevenuePerMile,
   getVehicleRevenuePerMile
@@ -516,6 +517,7 @@ dispatcherRoute.post(
   '/trailer',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  checkTrialAccess,
   FileUpload.fields([
     { name: 'image', maxCount: 1 },
     { name: 'oneTimeInspectionFiles', maxCount: 50 },
@@ -682,6 +684,7 @@ dispatcherRoute.post(
   ]),
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  checkTrialAccess,
   createVehicle
 )
 dispatcherRoute.get(

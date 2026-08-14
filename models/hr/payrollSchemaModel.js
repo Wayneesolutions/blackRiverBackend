@@ -44,6 +44,12 @@ const payrollSchema = new mongoose.Schema({
   medicareTax: { type: Number, default: 0 },
   stateDisabilityInsurance: { type: Number, default: 0 }, // SDI
   localTax: { type: Number, default: 0 },
+  // Layover fields
+  layoverHours: { type: Number, default: 0 },
+  layoverRate: { type: Number, default: 0 },
+  layoverAmount: { type: Number, default: 0 },
+  // Safety bonus
+  safetyBonus: { type: Number, default: 0 },
   company: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "CompanySettings",

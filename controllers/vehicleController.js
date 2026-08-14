@@ -6,7 +6,7 @@ import { getUserCompanyId } from "../utils/companyFilter.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 import VehicleDocuments from "../models/driver/vehicleDocumentsModel.js";
-import { Subscription } from "../models/subscriptionModel.js";
+import { checkTrialStatus } from "../utils/trialUtils.js";
 import { parseImportFile, mapRow } from "../utils/importParser.js";
 
 
@@ -255,21 +255,20 @@ export const createVehicle = async (req, res) => {
       }
     }
 
-    const subscription = await Subscription.findOne({
-      admin: req.user._id,
-      status: "active"
-    })
+    // For admin role: verify trial or active subscription (superadmin and sub-roles are unrestricted)
+    if (req.user.role === 'admin') {
+      const trialStatus = await checkTrialStatus(req.user._id);
 
-    if (!subscription) {
-      return res.status(403).json({
-        success: false,
-        message: "No active subscription found"
-      });
-    }
-
-
-    if (subscription.planType === 'monthly' && (subscription.subscriptionType === '1-year' || subscriptionType === '1-month' || subscriptionType === '6-month')) {
-
+      if (!trialStatus.isTrialActive && !trialStatus.hasActiveSubscription) {
+        return res.status(403).json({
+          success: false,
+          message: trialStatus.isTrialExpired
+            ? "Your trial has expired. Please subscribe to continue creating vehicles."
+            : "No active subscription or trial found. Please subscribe to continue.",
+          trialExpired: trialStatus.isTrialExpired || false,
+          subscriptionRequired: true
+        });
+      }
     }
 
 
@@ -1585,8 +1584,8 @@ export const importVehicles = async (req, res) => {
 
       if (!plateNumber) { errors.push({ row: rowNum, data: row, reason: 'Plate number is required' }); continue; }
 
-      // Skip duplicate
-      const existing = await Vehicle.findOne({ plateNumber }).lean();
+      // Skip duplicate within same company
+      const existing = await Vehicle.findOne({ plateNumber, company: companyId }).lean();
       if (existing) { skipped++; continue; }
 
       try {

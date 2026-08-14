@@ -4,9 +4,9 @@ const vehicleSchema = new mongoose.Schema(
   {
     // Basic Information (from frontend form)
     unitNumber: { type: String }, // Also used as internalId
-    internalId: { type: String, unique: true, sparse: true },
-    plateNumber: { type: String, required: true, unique: true },
-    vinNumber: { type: String, unique: true, sparse: true },
+    internalId: { type: String, sparse: true },
+    plateNumber: { type: String, required: true },
+    vinNumber: { type: String, sparse: true },
     make: { type: String },
     model: { type: String },
     year: { type: String },
@@ -293,5 +293,9 @@ const vehicleSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+vehicleSchema.index({ internalId: 1, company: 1 }, { unique: true, sparse: true });
+vehicleSchema.index({ plateNumber: 1, company: 1 }, { unique: true, sparse: true });
+vehicleSchema.index({ vinNumber: 1, company: 1 }, { unique: true, sparse: true });
 
 export const Vehicle = mongoose.model("Vehicle", vehicleSchema);

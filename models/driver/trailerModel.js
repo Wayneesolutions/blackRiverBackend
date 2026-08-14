@@ -5,8 +5,8 @@ const trailerSchema = new mongoose.Schema(
     // Basic Information (from frontend form)
     unitNumber: { type: String }, // Also used as internalId
     trailer: { type: String }, // Trailer number/identifier
-    vinNumber: { type: String, unique: true, sparse: true },
-    plateNumber: { type: String, required: true, unique: true },
+    vinNumber: { type: String, sparse: true },
+    plateNumber: { type: String, required: true },
     make: { type: String },
     model: { type: String },
     year: { type: String },
@@ -65,7 +65,7 @@ const trailerSchema = new mongoose.Schema(
     trailerImageUrl: { type: String },
     
     // GPS Tracking Fields
-    internalId: { type: String, unique: true, sparse: true }, // For Termoking integration
+    internalId: { type: String, sparse: true }, // For Termoking integration
     currentLocation: {
       address: { type: String },
       longitude: { type: String },
@@ -227,5 +227,9 @@ const trailerSchema = new mongoose.Schema(
     
   { timestamps: true }
 );
+
+trailerSchema.index({ internalId: 1, company: 1 }, { unique: true, sparse: true });
+trailerSchema.index({ plateNumber: 1, company: 1 }, { unique: true, sparse: true });
+trailerSchema.index({ vinNumber: 1, company: 1 }, { unique: true, sparse: true });
 
 export const Trailer = mongoose.model("Trailer", trailerSchema);

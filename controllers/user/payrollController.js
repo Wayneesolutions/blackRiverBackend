@@ -6,9 +6,11 @@ import { getUserCompanyId } from "../../utils/companyFilter.js";
 
 export const createPayroll = async (req, res) => {
   try {
-    const { 
-      userId, baseSalary, bonus = 0, deductions = 0, payDate, startDate, endDate, 
+    const {
+      userId, baseSalary, bonus = 0, deductions = 0, payDate, startDate, endDate,
       loadIds, tripIds, totalMiles, ratePerMile,
+      layoverHours = 0, layoverRate = 0, layoverAmount = 0,
+      safetyBonus = 0,
       country = 'USA',
       // Canada taxes
       federalIncomeTaxCA = 0, provincialIncomeTaxCA = 0, cpp = 0, ei = 0, provincialHealthTaxCA = 0,
@@ -208,6 +210,12 @@ export const createPayroll = async (req, res) => {
       trips: tripsArray, // New: trips for drivers
       totalMiles: totalMiles ? Number(totalMiles) : 0,
       ratePerMile: ratePerMile ? parseFloat(Number(ratePerMile).toFixed(2)) : 0,
+      // Layover fields
+      layoverHours: Number(layoverHours) || 0,
+      layoverRate: Number(layoverRate) || 0,
+      layoverAmount: Number(layoverAmount) || 0,
+      // Safety bonus
+      safetyBonus: Number(safetyBonus) || 0,
       // Tax fields
       country: country || 'USA',
       // Canada taxes
@@ -1058,8 +1066,9 @@ export const getPayrolls = async (req, res) => {
 export const updatePayroll = async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
+    const {
       baseSalary, bonus, deductions, payDate, startDate, endDate,
+      layoverHours, layoverRate, layoverAmount, safetyBonus,
       country = 'USA',
       // Canada taxes
       federalIncomeTaxCA = 0, provincialIncomeTaxCA = 0, cpp = 0, ei = 0, provincialHealthTaxCA = 0,
@@ -1206,6 +1215,12 @@ export const updatePayroll = async (req, res) => {
     if (medicareTax !== undefined) payroll.medicareTax = Number(medicareTax);
     if (stateDisabilityInsurance !== undefined) payroll.stateDisabilityInsurance = Number(stateDisabilityInsurance);
     if (localTax !== undefined) payroll.localTax = Number(localTax);
+    // Layover fields
+    if (layoverHours !== undefined) payroll.layoverHours = Number(layoverHours) || 0;
+    if (layoverRate !== undefined) payroll.layoverRate = Number(layoverRate) || 0;
+    if (layoverAmount !== undefined) payroll.layoverAmount = Number(layoverAmount) || 0;
+    // Safety bonus
+    if (safetyBonus !== undefined) payroll.safetyBonus = Number(safetyBonus) || 0;
 
     // Calculate total taxes
     let totalTaxes = 0;

@@ -1101,6 +1101,70 @@ This is an automated notification from the Logistics Platform.
 };
 
 /**
+ * Notify superadmin that a customer admin's trial has expired and needs a plan assigned
+ */
+export const sendSuperadminTrialExpiredNotification = async ({
+  superadminEmail,
+  adminName,
+  adminEmail,
+  adminCompany,
+  trialEndDate,
+}) => {
+  try {
+    if (!superadminEmail) return { success: false, message: 'No superadmin email provided' };
+
+    const transporter = createTransporter();
+
+    const trialEndFormatted = trialEndDate
+      ? new Date(trialEndDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+      : 'Recently';
+
+    const adminUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/superadmin/accounts`;
+
+    const htmlContent = `
+      <!DOCTYPE html><html><head><meta charset="utf-8">
+      <style>
+        body { font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f4; }
+        .container { background: #fff; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { background: linear-gradient(135deg, #1183e0 0%, #0d6fc7 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; margin: -30px -30px 30px -30px; text-align: center; }
+        .info-box { background: #eff6ff; border-left: 4px solid #1183e0; padding: 15px; margin: 15px 0; border-radius: 4px; }
+        .info-row { display: flex; margin-bottom: 8px; }
+        .info-label { font-weight: bold; min-width: 120px; color: #555; }
+        .button { display: inline-block; padding: 12px 24px; background: #1183e0; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; font-weight: bold; }
+        .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef; text-align: center; color: #6c757d; font-size: 12px; }
+      </style></head>
+      <body><div class="container">
+        <div class="header"><h1>🔔 Customer Trial Expired</h1></div>
+        <p>A customer's free trial has expired and they require a plan to be assigned.</p>
+        <div class="info-box">
+          <div class="info-row"><span class="info-label">Customer:</span><span>${adminName}</span></div>
+          <div class="info-row"><span class="info-label">Email:</span><span>${adminEmail}</span></div>
+          <div class="info-row"><span class="info-label">Company:</span><span>${adminCompany || 'N/A'}</span></div>
+          <div class="info-row"><span class="info-label">Trial Ended:</span><span>${trialEndFormatted}</span></div>
+        </div>
+        <p>Please log in to the admin panel and assign an appropriate subscription plan to restore their access.</p>
+        <p style="text-align:center;"><a href="${adminUrl}" class="button">Go to Admin Accounts</a></p>
+        <div class="footer"><p>Logistics Platform — Automated Notification</p><p>&copy; ${new Date().getFullYear()} All rights reserved.</p></div>
+      </div></body></html>`;
+
+    const textContent = `Customer Trial Expired\n\nCustomer: ${adminName}\nEmail: ${adminEmail}\nCompany: ${adminCompany || 'N/A'}\nTrial Ended: ${trialEndFormatted}\n\nPlease assign a plan: ${adminUrl}`;
+
+    await transporter.sendMail({
+      from: `"Logistics Platform" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+      to: superadminEmail,
+      subject: `🔔 Action Required: ${adminName}'s trial has expired`,
+      text: textContent,
+      html: htmlContent,
+    });
+
+    return { success: true, message: 'Superadmin trial expired notification sent' };
+  } catch (error) {
+    console.error('❌ Error sending superadmin trial expired notification:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+/**
  * Send invoice email to customer
  * @param {Object} options - Email options
  * @param {String} options.customerEmail - Customer's email address

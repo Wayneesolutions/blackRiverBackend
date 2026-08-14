@@ -233,9 +233,9 @@ export const createAdmin = async (req, res) => {
       return res.status(400).json({ success: false, message: "Admin with this email already exists" });
     }
 
-    // Check if internalId already exists
+    // Check if internalId already exists within the same company
     if (internalId) {
-      const existingId = await User.findOne({ internalId });
+      const existingId = await User.findOne({ internalId, company: requestingUser.company });
       if (existingId) {
         return res.status(400).json({ success: false, message: "Internal ID already exists" });
       }

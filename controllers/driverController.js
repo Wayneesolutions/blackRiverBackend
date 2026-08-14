@@ -1357,10 +1357,11 @@ export const createDriver = async (req, res) => {
       cppExempt,
       payrollTaxExempt,
       customHst,
-      // Driver Type (SOLO/TEAM)
+      // Driver Type (SOLO/TEAM/BOTH)
       driverTypeSolo,
       solo,
       cross_border_eligible,
+      safetyBonus,
       // Travel Information
       canadianWorkerStatus,
       permanentResidenceExpiry,
@@ -1412,8 +1413,8 @@ export const createDriver = async (req, res) => {
       finalInternalId = `${rolePrefix}-${timestamp}`;
     }
 
-    // Check if internalId already exists
-    const existingInternalId = await User.findOne({ internalId: finalInternalId });
+    // Check if internalId already exists within the same company
+    const existingInternalId = await User.findOne({ internalId: finalInternalId, company: req.user.company });
     if (existingInternalId) {
       return res.json({ success: false, message: "Internal ID already exists" });
     }
@@ -1747,13 +1748,22 @@ export const createDriver = async (req, res) => {
       detailsObj.provTaxExempt = payrollTaxExemptBool;
     }
     if (customHst !== undefined) detailsObj.customHst = customHst || '';
-    // Driver Type (SOLO/TEAM) - driverTypeSolo: true = SOLO, false = TEAM
+    // Driver Type (SOLO/TEAM/BOTH) - stored as string
     // Accept both driverTypeSolo and solo for backward compatibility
     if (driverTypeSolo !== undefined || solo !== undefined) {
       const soloValue = driverTypeSolo !== undefined ? driverTypeSolo : solo;
-      const soloBool = soloValue === 'true' || soloValue === true || soloValue === 'Yes' || soloValue === 'yes';
-      detailsObj.driverTypeSolo = soloBool;
-      console.log('✅ Setting driverTypeSolo on create:', soloBool);
+      // Normalize: legacy boolean true → 'SOLO', false → 'TEAM'
+      let soloStr;
+      if (soloValue === true || soloValue === 'true' || soloValue === 'Yes' || soloValue === 'yes') soloStr = 'SOLO';
+      else if (soloValue === false || soloValue === 'false' || soloValue === 'No' || soloValue === 'no') soloStr = 'TEAM';
+      else if (['SOLO', 'TEAM', 'BOTH'].includes(String(soloValue).toUpperCase())) soloStr = String(soloValue).toUpperCase();
+      else soloStr = 'SOLO';
+      detailsObj.driverTypeSolo = soloStr;
+      console.log('✅ Setting driverTypeSolo on create:', soloStr);
+    }
+    // Safety bonus
+    if (safetyBonus !== undefined) {
+      detailsObj.safetyBonus = Number(safetyBonus) || 0;
     }
     // Cross-border eligibility
     if (cross_border_eligible !== undefined) {
@@ -2887,11 +2897,12 @@ export const updateDriver = async (req, res) => {
       paymentPostalCode,
       paymentCountry,
       paymentStateProvince,
-      // Driver Type (SOLO/TEAM)
+      // Driver Type (SOLO/TEAM/BOTH)
       driverTypeSolo,
       solo,
       // Cross-border eligibility
       cross_border_eligible,
+      safetyBonus,
       // Related records
       certifications,
       documents,
@@ -3265,14 +3276,20 @@ export const updateDriver = async (req, res) => {
     if (paymentPostalCode !== undefined) driver.details.paymentPostalCode = paymentPostalCode || '';
     if (paymentCountry !== undefined) driver.details.paymentCountry = paymentCountry || '';
     if (paymentStateProvince !== undefined) driver.details.paymentStateProvince = paymentStateProvince || '';
-    // Update driver type (SOLO/TEAM) - driverTypeSolo: true = SOLO, false = TEAM
+    // Update driver type (SOLO/TEAM/BOTH) - stored as string
     // Accept both driverTypeSolo and solo for backward compatibility
     if (driverTypeSolo !== undefined || solo !== undefined) {
       const soloValue = driverTypeSolo !== undefined ? driverTypeSolo : solo;
-      const soloBool = soloValue === 'true' || soloValue === true || soloValue === 'Yes' || soloValue === 'yes';
-      driver.details.driverTypeSolo = soloBool;
-      console.log('✅ Updated driverTypeSolo:', soloBool);
+      // Normalize: legacy boolean true → 'SOLO', false → 'TEAM'
+      let soloStr;
+      if (soloValue === true || soloValue === 'true' || soloValue === 'Yes' || soloValue === 'yes') soloStr = 'SOLO';
+      else if (soloValue === false || soloValue === 'false' || soloValue === 'No' || soloValue === 'no') soloStr = 'TEAM';
+      else if (['SOLO', 'TEAM', 'BOTH'].includes(String(soloValue).toUpperCase())) soloStr = String(soloValue).toUpperCase();
+      else soloStr = 'SOLO';
+      driver.details.driverTypeSolo = soloStr;
+      console.log('✅ Updated driverTypeSolo:', soloStr);
     }
+    if (safetyBonus !== undefined) driver.details.safetyBonus = Number(safetyBonus) || 0;
     // Update cross-border eligibility
     if (cross_border_eligible !== undefined) {
       const crossBorderBool = cross_border_eligible === 'true' || cross_border_eligible === true || cross_border_eligible === 'Yes' || cross_border_eligible === 'yes';

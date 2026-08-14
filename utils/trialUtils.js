@@ -1,6 +1,6 @@
 import { User } from "../models/driver/userModel.js";
 import { Subscription } from "../models/subscriptionModel.js";
-import { sendTrialStartEmail, sendTrialExpiredEmail } from "../services/emailService.js";
+import { sendTrialStartEmail, sendTrialExpiredEmail, sendSuperadminTrialExpiredNotification } from "../services/emailService.js";
 
 /**
  * Resolve how many days a trial should run for, when the caller hasn't
@@ -205,7 +205,7 @@ export const checkTrialStatus = async (adminId) => {
       });
     }
 
-    // Send expired email if trial just expired (only once)
+    // Send expired emails if trial just expired (only once)
     if (isExpired && !admin.trialExpiredEmailSent) {
       sendTrialExpiredEmail({
         adminEmail: admin.email,
@@ -219,6 +219,21 @@ export const checkTrialStatus = async (adminId) => {
       }).catch(err => {
         console.error('Error sending trial expired email:', err);
       });
+
+      // Notify superadmin so they can assign a plan
+      User.findOne({ role: 'superadmin' }).sort({ createdAt: 1 }).select('email name').lean()
+        .then(superadmin => {
+          if (superadmin?.email) {
+            sendSuperadminTrialExpiredNotification({
+              superadminEmail: superadmin.email,
+              adminName: admin.name || 'Admin',
+              adminEmail: admin.email,
+              adminCompany: admin.company?.companyName,
+              trialEndDate: trialEndDate
+            }).catch(err => console.error('Error sending superadmin trial notification:', err));
+          }
+        })
+        .catch(err => console.error('Error finding superadmin for trial notification:', err));
     }
 
     return {

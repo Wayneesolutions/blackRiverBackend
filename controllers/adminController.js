@@ -111,6 +111,7 @@ export const loginAdmin = async (req, res) => {
         email: admin.email,
         role: admin.role,
         status: admin.status,
+        portals: admin.portals || [],
         token: token,
         subscriptionStatus: req.subscriptionStatus || null
       }

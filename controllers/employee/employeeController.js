@@ -166,8 +166,8 @@ export const createEmployee = async (req, res) => {
             }
         }
 
-        // Check if employee already exists
-        const existingEmployee = await User.findOne({ email });
+        // Check if employee already exists within the same company
+        const existingEmployee = await User.findOne({ email, company: requestingUser.company });
         if (existingEmployee) {
             return res.status(400).json({
                 success: false,
@@ -2490,5 +2490,33 @@ export const importEmployees = async (req, res) => {
   } catch (error) {
     console.error('importEmployees error:', error);
     res.status(500).json({ success: false, message: error.message || 'Import failed' });
+  }
+};
+
+
+// ✅ UPDATE EMPLOYEE PORTALS (Advanced Permissions)
+export const updateEmployeePortals = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { portals } = req.body;
+
+    const validPortals = ['dispatch_load', 'gps', 'human_resource', 'fleet_maintenance', 'mechanic', 'compliance', 'accounts', 'health_safety', 'manifest'];
+    if (!Array.isArray(portals) || portals.some(p => !validPortals.includes(p))) {
+      return res.status(400).json({ success: false, message: 'Invalid portals array' });
+    }
+
+    const employee = await User.findByIdAndUpdate(
+      id,
+      { portals },
+      { new: true, select: '_id name email role portals' }
+    );
+
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    res.json({ success: true, message: 'Portal permissions updated', data: employee });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 };

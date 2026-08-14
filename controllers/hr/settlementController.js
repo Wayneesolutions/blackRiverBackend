@@ -473,7 +473,7 @@ export const getSettlementStats = async (req, res) => {
 // Create Deduction/Addition
 export const createDeductionAddition = async (req, res) => {
   try {
-    const { name, type, recurrence, amount, assignedTo, startDate, endDate, description, isActive = true } = req.body;
+    const { name, type, recurrence, amount, amountType = 'flat', currency, assignedTo, startDate, endDate, description, isActive = true } = req.body;
 
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
@@ -499,6 +499,8 @@ export const createDeductionAddition = async (req, res) => {
       type,
       recurrence,
       amount: Number(amount),
+      amountType: amountType || 'flat',
+      currency: currency || 'CAD',
       assignedTo,
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : undefined,
@@ -668,7 +670,7 @@ export const getDeductionAdditionById = async (req, res) => {
 export const updateDeductionAddition = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, type, recurrence, amount, assignedTo, startDate, endDate, description, isActive } = req.body;
+    const { name, type, recurrence, amount, amountType, currency, assignedTo, startDate, endDate, description, isActive } = req.body;
 
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
@@ -716,6 +718,8 @@ export const updateDeductionAddition = async (req, res) => {
     if (type) deductionAddition.type = type;
     if (recurrence) deductionAddition.recurrence = recurrence;
     if (amount !== undefined) deductionAddition.amount = Number(amount);
+    if (amountType !== undefined) deductionAddition.amountType = amountType;
+    if (currency !== undefined) deductionAddition.currency = currency;
     if (assignedTo) deductionAddition.assignedTo = assignedTo;
     if (startDate) deductionAddition.startDate = new Date(startDate);
     if (endDate) deductionAddition.endDate = new Date(endDate);

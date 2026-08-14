@@ -4,6 +4,7 @@ import { getUserCompanyId } from "../utils/companyFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 import VehicleDocuments from "../models/driver/vehicleDocumentsModel.js";
 import { parseImportFile, mapRow } from "../utils/importParser.js";
+import { checkTrialStatus } from "../utils/trialUtils.js";
 
 // Helper function to generate signed URL for S3 images
 const generateSignedUrl = async (url) => {
@@ -269,6 +270,22 @@ export const createTrailer = async (req, res) => {
         return res.status(400).json({
           success: false,
           message: "Please complete company settings first before creating trailers. Go to Company Settings to set up your company."
+        });
+      }
+    }
+
+    // For admin role: verify trial or active subscription (superadmin and sub-roles are unrestricted)
+    if (req.user.role === 'admin') {
+      const trialStatus = await checkTrialStatus(req.user._id);
+
+      if (!trialStatus.isTrialActive && !trialStatus.hasActiveSubscription) {
+        return res.status(403).json({
+          success: false,
+          message: trialStatus.isTrialExpired
+            ? "Your trial has expired. Please subscribe to continue creating trailers."
+            : "No active subscription or trial found. Please subscribe to continue.",
+          trialExpired: trialStatus.isTrialExpired || false,
+          subscriptionRequired: true
         });
       }
     }
@@ -1419,8 +1436,8 @@ export const importTrailers = async (req, res) => {
       const existing = await Trailer.findOne({ trailer: trailerNumber, company: companyId }).lean();
       if (existing) { skipped++; continue; }
 
-      // Also check plateNumber uniqueness
-      const dupPlate = plateNumber && !plateNumber.startsWith('PLT-') ? await Trailer.findOne({ plateNumber }).lean() : null;
+      // Also check plateNumber uniqueness within same company
+      const dupPlate = plateNumber && !plateNumber.startsWith('PLT-') ? await Trailer.findOne({ plateNumber, company: companyId }).lean() : null;
       if (dupPlate) { skipped++; continue; }
 
       try {
