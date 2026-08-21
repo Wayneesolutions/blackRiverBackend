@@ -191,6 +191,7 @@ const userSchema = new mongoose.Schema({
     driverTypeSolo: { type: String, default: 'SOLO' }, // 'SOLO', 'TEAM', or 'BOTH'
     cross_border_eligible: { type: Boolean, default: false }, // Cross-border eligibility
     safetyBonus: { type: Number, default: 0 }, // Safety bonus per payroll period
+    safetyBonusType: { type: String, enum: ['flat', 'percentage'], default: 'flat' },
 
     // Payroll Settings
     payPeriod: { type: String },

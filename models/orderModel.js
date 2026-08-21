@@ -268,7 +268,7 @@ const orderSchema = new mongoose.Schema(
     // Order status
     status: {
       type: String,
-      enum: ['planned', 'quoted', 'in-delivery', 'delivered', 'completed', 'canceled', 'verification_pending', 'pending_review'],
+      enum: ['draft', 'planned', 'quoted', 'in-delivery', 'delivered', 'completed', 'canceled', 'verification_pending', 'pending_review'],
       default: 'quoted' // changing default to quoted as it seems more appropriate for a new order, or keep planned if that's the workflow. User put planned first. I'll assume 'planned' or 'quoted'. Let's stick to 'planned' if it was default, but user listed it. Actually default was 'planned'.
     },
     // Accounting status

@@ -1362,6 +1362,7 @@ export const createDriver = async (req, res) => {
       solo,
       cross_border_eligible,
       safetyBonus,
+      safetyBonusType,
       // Travel Information
       canadianWorkerStatus,
       permanentResidenceExpiry,
@@ -1764,6 +1765,9 @@ export const createDriver = async (req, res) => {
     // Safety bonus
     if (safetyBonus !== undefined) {
       detailsObj.safetyBonus = Number(safetyBonus) || 0;
+    }
+    if (safetyBonusType !== undefined) {
+      detailsObj.safetyBonusType = ['flat', 'percentage'].includes(safetyBonusType) ? safetyBonusType : 'flat';
     }
     // Cross-border eligibility
     if (cross_border_eligible !== undefined) {
@@ -2903,6 +2907,7 @@ export const updateDriver = async (req, res) => {
       // Cross-border eligibility
       cross_border_eligible,
       safetyBonus,
+      safetyBonusType,
       // Related records
       certifications,
       documents,
@@ -3290,6 +3295,7 @@ export const updateDriver = async (req, res) => {
       console.log('✅ Updated driverTypeSolo:', soloStr);
     }
     if (safetyBonus !== undefined) driver.details.safetyBonus = Number(safetyBonus) || 0;
+    if (safetyBonusType !== undefined) driver.details.safetyBonusType = ['flat', 'percentage'].includes(safetyBonusType) ? safetyBonusType : 'flat';
     // Update cross-border eligibility
     if (cross_border_eligible !== undefined) {
       const crossBorderBool = cross_border_eligible === 'true' || cross_border_eligible === true || cross_border_eligible === 'Yes' || cross_border_eligible === 'yes';
