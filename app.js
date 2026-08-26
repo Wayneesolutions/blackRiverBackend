@@ -34,6 +34,8 @@ import companyDocumentRoute from "./routes/companyDocumentRoute.js";
 import { chatRoute, driverChatRoute } from "./routes/chatRoute.js";
 import { aiChatRoute } from "./routes/aiChatRoute.js";
 import violationRoute from "./routes/driverViolationRoute.js";
+import { timelineRoute } from "./routes/timelineRoute.js";
+import { draftRoute } from "./routes/draftRoute.js";
 import { swaggerUi, specs } from "./swagger/swagger.js";
 import { fileUploadErrorHandler } from "./middleware/fileUploadErrorHandler.js";
 import { createPaymentSession } from "./controllers/user/paymentController.js";
@@ -429,6 +431,8 @@ app.use('/api/v1/chat', chatRoute)
 app.use('/api/v1/driver/chat', driverChatRoute)
 app.use('/api/v1/ai', aiChatRoute)
 app.use('/api/v1/violations', violationRoute)
+app.use('/api/v1/timeline', timelineRoute)
+app.use('/api/v1/drafts', draftRoute)
 
 // ✅ Logs endpoint (for mobile app client-side logging)
 import { createLog } from './controllers/logController.js';
