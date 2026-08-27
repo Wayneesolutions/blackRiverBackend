@@ -143,6 +143,16 @@ export const createInsuranceClaim = async (req, res) => {
       createdBy: req.user.id
     };
 
+    // Process uploaded document files
+    if (req.files && req.files.length > 0) {
+      claimData.documents = req.files.map(file => {
+        if (process.env.NODE_ENV === 'production') {
+          return file.key || file.location;
+        }
+        return file.path.replace(/\\/g, '/');
+      });
+    }
+
     const claim = new InsuranceClaim(claimData);
     await claim.save();
 
@@ -393,6 +403,17 @@ export const updateInsuranceClaim = async (req, res) => {
     if (description) claim.description = description;
     if (location !== undefined) claim.location = location;
     if (notes !== undefined) claim.notes = notes;
+
+    // Append newly uploaded document files
+    if (req.files && req.files.length > 0) {
+      const newDocs = req.files.map(file => {
+        if (process.env.NODE_ENV === 'production') {
+          return file.key || file.location;
+        }
+        return file.path.replace(/\\/g, '/');
+      });
+      claim.documents = [...(claim.documents || []), ...newDocs];
+    }
 
     await claim.save();
 

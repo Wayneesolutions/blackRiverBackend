@@ -1680,3 +1680,385 @@ export const importFuelReportsFromCsv = async (req, res) => {
     });
   }
 };
+
+// ─── EFS/Comdata Fuel Card PDF Import ────────────────────────────────────────
+
+const polyfillPromise = () => {
+  if (!Promise.withResolvers) {
+    Promise.withResolvers = function () {
+      let resolve, reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+  }
+  if (!Promise.try) {
+    Promise.try = function (fn) {
+      return new Promise((resolve, reject) => {
+        try { resolve(fn()); } catch (e) { reject(e); }
+      });
+    };
+  }
+};
+
+/**
+ * Extract text items with x/y positions from every page of a PDF buffer.
+ * Returns rows grouped by y-coordinate, sorted by x, as arrays of strings.
+ */
+const extractPdfRows = async (pdfBuffer) => {
+  polyfillPromise();
+
+  let pdfjsLib;
+  try {
+    const m = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    pdfjsLib = m.default || m;
+  } catch {
+    const m = await import('pdfjs-dist');
+    pdfjsLib = m.default || m;
+  }
+
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
+  const pdf = await loadingTask.promise;
+
+  // Collect all text items across all pages with global y offset per page
+  const allItems = [];
+  let pageYOffset = 0;
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+
+    for (const item of content.items) {
+      const str = item.str;
+      if (!str || !str.trim()) continue;
+      const x = Math.round(item.transform[4]);
+      // Flip y so rows go top-to-bottom (PDF y is bottom-up)
+      const y = Math.round(viewport.height - item.transform[5]);
+      allItems.push({ str: str.trim(), x, y: y + pageYOffset });
+    }
+    pageYOffset += Math.round(viewport.height) + 20; // gap between pages
+  }
+
+  // Group items with y within 4px into the same row
+  const Y_TOL = 4;
+  const rowMap = new Map();
+  for (const item of allItems) {
+    let rowKey = null;
+    for (const key of rowMap.keys()) {
+      if (Math.abs(key - item.y) <= Y_TOL) { rowKey = key; break; }
+    }
+    if (rowKey === null) { rowKey = item.y; rowMap.set(rowKey, []); }
+    rowMap.get(rowKey).push(item);
+  }
+
+  // Sort rows top-to-bottom, items left-to-right within each row
+  const sortedKeys = [...rowMap.keys()].sort((a, b) => a - b);
+  return sortedKeys.map(key => {
+    const items = rowMap.get(key).sort((a, b) => a.x - b.x);
+    return items; // array of { str, x, y }
+  });
+};
+
+/**
+ * Parse EFS/Comdata transaction rows from extracted PDF rows.
+ * Returns structured transaction objects.
+ */
+const parseEfsRows = (pdfRows) => {
+  // Find the header row — it must contain typical EFS column labels
+  const EFS_HEADERS = ['Card#', 'Trx Date', 'Transaction#', 'Store City', 'Product', 'Driver ID', 'Vehicle', 'Quantity', 'Invoice Amount'];
+
+  let headerRowIdx = -1;
+  let colHeaders = [];
+
+  for (let i = 0; i < pdfRows.length; i++) {
+    const rowText = pdfRows[i].map(t => t.str).join(' ');
+    const matchCount = EFS_HEADERS.filter(h => rowText.includes(h)).length;
+    if (matchCount >= 4) {
+      // This row (and possibly next if wrapped) is the header
+      headerRowIdx = i;
+      colHeaders = pdfRows[i];
+      break;
+    }
+  }
+
+  if (headerRowIdx < 0) {
+    // Fallback: look for rows that contain "Card#" anywhere
+    for (let i = 0; i < pdfRows.length; i++) {
+      const texts = pdfRows[i].map(t => t.str);
+      if (texts.includes('Card#') || texts.some(t => t.startsWith('Card'))) {
+        headerRowIdx = i;
+        colHeaders = pdfRows[i];
+        break;
+      }
+    }
+  }
+
+  if (headerRowIdx < 0 || colHeaders.length === 0) return [];
+
+  // Build column x-boundaries from header items
+  // Each column spans from its header's x until the next header's x
+  const columns = colHeaders.map((hdr, idx) => ({
+    name: hdr.str,
+    xStart: hdr.x,
+    xEnd: idx + 1 < colHeaders.length ? colHeaders[idx + 1].x : Infinity,
+  }));
+
+  // Helper: assign a text item to the closest column
+  const assignColumn = (item) => {
+    let best = columns[0];
+    let bestDist = Math.abs(item.x - columns[0].xStart);
+    for (const col of columns) {
+      if (item.x >= col.xStart && item.x < col.xEnd) return col.name;
+      const dist = Math.abs(item.x - col.xStart);
+      if (dist < bestDist) { bestDist = dist; best = col; }
+    }
+    return best.name;
+  };
+
+  const getCol = (rowObj, name) => rowObj[name]?.trim() || '';
+
+  // Skip to lines after the header row
+  const transactions = [];
+  const skipWords = new Set(['Summary', 'Total', 'Totals', 'Page', 'Grand', 'State', 'Province', 'Sub-Total']);
+
+  for (let i = headerRowIdx + 1; i < pdfRows.length; i++) {
+    const row = pdfRows[i];
+    if (row.length < 3) continue;
+
+    const firstStr = row[0]?.str || '';
+    // Skip section headers, totals, page numbers
+    if (skipWords.has(firstStr) || /^Page\s+\d/i.test(firstStr)) continue;
+    // Stop at summary sections
+    if (/Summary by (State|Province)/i.test(row.map(t => t.str).join(' '))) break;
+
+    // Build row object: colName -> value
+    const rowObj = {};
+    for (const item of row) {
+      const col = assignColumn(item);
+      rowObj[col] = (rowObj[col] ? rowObj[col] + ' ' : '') + item.str;
+    }
+
+    const trxDate = getCol(rowObj, 'Trx Date');
+    const invoiceAmt = getCol(rowObj, 'Invoice Amount');
+
+    // Validate: must have a date-like string and some amount
+    if (!trxDate || !/\d{1,2}\/\d{1,2}\/\d{4}/.test(trxDate)) continue;
+
+    // Parse date MM/DD/YYYY
+    const [month, day, year] = trxDate.split('/');
+    const parsedDate = new Date(`${year}-${month}-${day}`);
+    if (isNaN(parsedDate.getTime())) continue;
+
+    const parseAmt = (s) => {
+      const n = parseFloat((s || '').replace(/[^0-9.\-]/g, ''));
+      return isNaN(n) ? 0 : n;
+    };
+
+    const country = getCol(rowObj, 'Country') || 'US';
+    const currency = (country === 'CAN' || country === 'CA' || country === 'Canada') ? 'CAD' : 'USA';
+
+    transactions.push({
+      cardNumber: getCol(rowObj, 'Card#'),
+      cardDescription: getCol(rowObj, 'Card Description'),
+      date: parsedDate,
+      transactionNumber: getCol(rowObj, 'Transaction#'),
+      storeNumber: getCol(rowObj, 'Store Number'),
+      storeCity: getCol(rowObj, 'Store City'),
+      state: getCol(rowObj, 'State'),
+      country,
+      product: getCol(rowObj, 'Product'),
+      driverIdRaw: getCol(rowObj, 'Driver ID'),
+      odometer: getCol(rowObj, 'Odometer'),
+      trailer: getCol(rowObj, 'Trailer'),
+      trip: getCol(rowObj, 'Trip'),
+      vehicleRaw: getCol(rowObj, 'Vehicle'),
+      quantity: parseAmt(getCol(rowObj, 'Quantity')),
+      fuelAmount: parseAmt(getCol(rowObj, 'Fuel')),
+      taxHst: parseAmt(getCol(rowObj, 'Fuel G/HST')),
+      taxQst: parseAmt(getCol(rowObj, 'Fuel P/QST')),
+      merchandiseAmount: parseAmt(getCol(rowObj, 'Merchandise')),
+      invoiceAmount: parseAmt(invoiceAmt),
+      currency,
+    });
+  }
+
+  return transactions;
+};
+
+// POST /dispatcher/fuel-report/parse-fuel-card — parse EFS/Comdata PDF, return draft rows
+export const parseFuelCardPdf = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Please upload a PDF file' });
+    }
+
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+
+    if (!isSuperadmin && !companyId) {
+      return res.status(400).json({ success: false, message: 'Please complete company settings first.' });
+    }
+
+    let fileBuffer;
+    if (req.file.buffer) {
+      fileBuffer = req.file.buffer;
+    } else if (req.file.path) {
+      fileBuffer = fs.readFileSync(req.file.path);
+    } else {
+      return res.status(400).json({ success: false, message: 'Unable to read uploaded file.' });
+    }
+
+    const pdfRows = await extractPdfRows(fileBuffer);
+    const rawTransactions = parseEfsRows(pdfRows);
+
+    if (rawTransactions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No transactions found. Make sure this is an EFS/Comdata fuel card report.',
+      });
+    }
+
+    // Load drivers and vehicles for auto-matching
+    const matchFilter = companyId ? { company: companyId } : {};
+    const [drivers, fleetUnits] = await Promise.all([
+      User.find({ ...matchFilter, role: 'driver' }).select('name internalId').lean(),
+      FleetUnit.find(matchFilter).select('unitNo internalId makeModel unitType').lean(),
+    ]);
+
+    const matchDriver = (driverIdRaw) => {
+      if (!driverIdRaw) return null;
+      const needle = driverIdRaw.toString().trim().toLowerCase();
+      return drivers.find(d =>
+        (d.internalId && d.internalId.toLowerCase() === needle) ||
+        (d.name && d.name.toLowerCase() === needle)
+      ) || null;
+    };
+
+    const matchVehicle = (vehicleRaw) => {
+      if (!vehicleRaw) return null;
+      const needle = vehicleRaw.toString().trim().toLowerCase();
+      return fleetUnits.find(u =>
+        (u.unitNo && u.unitNo.toLowerCase() === needle) ||
+        (u.internalId && u.internalId.toLowerCase() === needle)
+      ) || null;
+    };
+
+    const draftRows = rawTransactions.map((trx, idx) => {
+      const driver = matchDriver(trx.driverIdRaw);
+      const vehicle = matchVehicle(trx.vehicleRaw);
+      const matchStatus =
+        driver && vehicle ? 'matched' :
+        (driver || vehicle) ? 'review' : 'unmatched';
+
+      return {
+        _rowIndex: idx,
+        matchStatus,
+        ...trx,
+        date: trx.date.toISOString(),
+        driverName: driver?.name || null,
+        driverId_db: driver?._id?.toString() || null,
+        vehicleId_db: vehicle?._id?.toString() || null,
+        vehicleUnitNo: vehicle?.unitNo || null,
+        skip: false,
+      };
+    });
+
+    const matched = draftRows.filter(r => r.matchStatus === 'matched').length;
+    const review = draftRows.filter(r => r.matchStatus === 'review').length;
+    const unmatched = draftRows.filter(r => r.matchStatus === 'unmatched').length;
+
+    res.json({
+      success: true,
+      message: `Parsed ${draftRows.length} transactions — ${matched} matched, ${review} need review, ${unmatched} unmatched`,
+      data: { rows: draftRows, totalRows: draftRows.length, matched, review, unmatched },
+    });
+  } catch (error) {
+    console.error('Error parsing fuel card PDF:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to parse PDF' });
+  }
+};
+
+// POST /dispatcher/fuel-report/confirm-fuel-card — save confirmed rows as fuel reports
+export const confirmFuelCardImport = async (req, res) => {
+  try {
+    const { rows } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ success: false, message: 'No rows provided' });
+    }
+
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+
+    if (!isSuperadmin && !companyId) {
+      return res.status(400).json({ success: false, message: 'Please complete company settings first.' });
+    }
+
+    const results = { success: 0, failed: 0, errors: [] };
+
+    for (const row of rows) {
+      if (row.skip) continue;
+      try {
+        if (!row.vehicleId_db) {
+          results.failed++;
+          results.errors.push(`Row ${row._rowIndex + 1} (${row.transactionNumber || 'no trx#'}): Vehicle not assigned`);
+          continue;
+        }
+
+        // Ensure a unique transaction number exists
+        let transactionNumber = row.transactionNumber || `FC-${Date.now()}-${row._rowIndex}`;
+
+        // Check for duplicates
+        const existing = await FuelReport.findOne({ transactionNumber });
+        if (existing) {
+          // Append suffix to make unique
+          transactionNumber = `${transactionNumber}-${row._rowIndex}-${Date.now()}`;
+        }
+
+        const notes = [
+          row.cardNumber ? `Card: ${row.cardNumber}` : null,
+          row.quantity ? `Qty: ${row.quantity}` : null,
+          row.taxHst ? `HST: ${row.taxHst}` : null,
+          row.taxQst ? `QST: ${row.taxQst}` : null,
+        ].filter(Boolean).join(' | ');
+
+        const report = new FuelReport({
+          reporter: req.user._id || null,
+          driver: row.driverId_db ? new mongoose.Types.ObjectId(row.driverId_db) : null,
+          vehicle: new mongoose.Types.ObjectId(row.vehicleId_db),
+          unit: new mongoose.Types.ObjectId(row.vehicleId_db),
+          status: 'pending',
+          date: new Date(row.date),
+          product: row.product || null,
+          type: row.product || null,
+          transactionNumber,
+          transactionAmount: row.invoiceAmount || 0,
+          fuelAmount: row.fuelAmount || 0,
+          currency: row.currency || 'USA',
+          state: row.state || null,
+          city: row.storeCity || null,
+          cityLocation: row.storeCity || null,
+          currentOdometer: row.odometer || null,
+          paymentNotes: notes || null,
+          location: row.storeCity ? { address: `${row.storeCity}, ${row.state || ''}`.trim() } : null,
+          company: companyId || null,
+        });
+
+        await report.save();
+        results.success++;
+      } catch (rowError) {
+        results.failed++;
+        results.errors.push(`Row ${row._rowIndex + 1}: ${rowError.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Import complete: ${results.success} saved, ${results.failed} failed`,
+      data: { success: results.success, failed: results.failed, errors: results.errors.slice(0, 20) },
+    });
+  } catch (error) {
+    console.error('Error confirming fuel card import:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to save fuel reports' });
+  }
+};

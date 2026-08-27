@@ -1,6 +1,8 @@
 import { Attendance } from "../../models/hr/attendanceModel.js";
 import { User } from "../../models/driver/userModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { UserSession } from "../../models/hr/userSessionModel.js";
+import { closeDayBoundarySession, shouldAutoTrackLogin } from "../../services/attendanceTrackingService.js";
 
 const toStartOfDay = (d) => new Date(new Date(d).setHours(0,0,0,0));
 
@@ -34,8 +36,10 @@ export const listAttendance = async (req, res) => {
       filter.date = { $gte: start, $lte: end };
     }
     
-    // Filter by tracked roles only (hr, dispatcher, Fleet Maintenance Manager, safety officer, Compliance Manager)
-    const trackedRoles = ['hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'Compliance Manager'];
+    const trackedRoles = [
+      'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'Compliance Manager',
+      'accountant', 'Maintenance Crew (Mechanics)'
+    ];
     
     const data = await Attendance.find(filter)
       .populate({
@@ -250,6 +254,134 @@ export const deleteAttendance = async (req, res) => {
   } catch (e) {
     console.error("Error in deleteAttendance:", e);
     res.status(500).json({ success: false, message: e.message || "Failed to delete attendance record" });
+  }
+};
+
+// POST /attendance/break/start — marks break start on current active session
+export const startBreak = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const session = await UserSession.findOne({ user: userId, isActive: true }).sort({ loginTime: -1 });
+    if (!session) return res.status(404).json({ success: false, message: 'No active session' });
+    // Don't start a new break if one is already open
+    const openBreak = session.breaks?.find(b => b.start && !b.end);
+    if (openBreak) return res.status(400).json({ success: false, message: 'Break already in progress' });
+    session.breaks = [...(session.breaks || []), { start: new Date() }];
+    await session.save();
+    res.json({ success: true, message: 'Break started', breakStart: session.breaks[session.breaks.length - 1].start });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /attendance/break/end — ends the current open break
+export const endBreak = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const session = await UserSession.findOne({ user: userId, isActive: true }).sort({ loginTime: -1 });
+    if (!session) return res.status(404).json({ success: false, message: 'No active session' });
+    const openBreakIdx = session.breaks?.findIndex(b => b.start && !b.end);
+    if (openBreakIdx === undefined || openBreakIdx < 0) return res.status(400).json({ success: false, message: 'No break in progress' });
+    session.breaks[openBreakIdx].end = new Date();
+    session.markModified('breaks');
+    await session.save();
+    const duration = Math.round((session.breaks[openBreakIdx].end - session.breaks[openBreakIdx].start) / 60000);
+    res.json({ success: true, message: 'Break ended', durationMinutes: duration });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /attendance/session/start — manually starts a work session (for manual-start roles)
+export const startSession = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const existing = await UserSession.findOne({ user: userId, isActive: true });
+    if (existing) return res.status(400).json({ success: false, message: 'Work session already active' });
+
+    const companyId = getUserCompanyId(req.user);
+    const user = await User.findById(userId).lean();
+    const now = new Date();
+
+    const session = await UserSession.create({
+      user: userId,
+      company: companyId || user?.company || null,
+      loginTime: now,
+      lastActivityTime: now,
+      isActive: true,
+    });
+
+    res.json({ success: true, message: 'Work session started', data: { loginTime: session.loginTime } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /attendance/session/current — returns current session info with break status
+export const getCurrentSession = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    let session = await UserSession.findOne({ user: userId, isActive: true }).sort({ loginTime: -1 }).lean();
+    if (!session) return res.json({ success: true, data: null });
+
+    // Check if this session belongs to a previous calendar day
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const sessionDay = new Date(session.loginTime);
+    sessionDay.setHours(0, 0, 0, 0);
+
+    if (sessionDay < today) {
+      // Close yesterday's session and create its attendance record
+      await closeDayBoundarySession(session);
+
+      // For auto-tracked roles, start a fresh session for today
+      const user = await User.findById(userId).lean();
+      if (user && shouldAutoTrackLogin(user.role)) {
+        const companyId = getUserCompanyId(req.user);
+        const now = new Date();
+        const newSession = await UserSession.create({
+          user: userId,
+          company: companyId || user.company || null,
+          loginTime: now,
+          lastActivityTime: now,
+          isActive: true,
+        });
+        return res.json({
+          success: true,
+          data: {
+            loginTime: newSession.loginTime,
+            onBreak: false,
+            totalBreakMinutes: 0,
+            workMinutes: 0,
+            currentBreakStart: null
+          }
+        });
+      }
+
+      // Manual-tracked roles must start their own session each day
+      return res.json({ success: true, data: null });
+    }
+
+    // Session is from today — return live data as before
+    const now = new Date();
+    const totalBreakMs = (session.breaks || []).reduce((sum, b) => {
+      const end = b.end || (b.start ? now : null);
+      return sum + (b.start && end ? end - b.start : 0);
+    }, 0);
+    const onBreak = !!(session.breaks || []).find(b => b.start && !b.end);
+    const workMs = now - session.loginTime - totalBreakMs;
+    res.json({
+      success: true,
+      data: {
+        loginTime: session.loginTime,
+        onBreak,
+        totalBreakMinutes: Math.round(totalBreakMs / 60000),
+        workMinutes: Math.max(0, Math.round(workMs / 60000)),
+        currentBreakStart: onBreak ? session.breaks.find(b => b.start && !b.end)?.start : null
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

@@ -3560,6 +3560,11 @@ export const getCompletedOrdersByDriver = async (req, res) => {
     const driverHighTempRate = driver.details?.salaryPerMileHighTemp || 0;
     const highTempThreshold = driver.details?.highTempThreshold || 35; // Default 35°C
     const driverMileRate = driverBaseRate || driver.details?.mileRate || 0;
+    const driverPaymentMethod = driver.details?.paymentMethod || 'PAID PER MILE';
+    const driverPercentageRate = driver.details?.percentageRate || 0;
+    const driverPerTripAmount = driver.details?.perTripAmount || 0;
+    const driverHourlyRate = driver.details?.hourlyRate || 0;
+    const driverDailyRate = driver.details?.dailyRate || 0;
 
     console.log('💰 Driver info:', {
       name: driver.name,
@@ -3877,22 +3882,39 @@ export const getCompletedOrdersByDriver = async (req, res) => {
         // else use primaryDriverBaseRate (ALONE rate)
       }
 
-      // Calculate earnings based on weather conditions using the appropriate rate
-      let earnings = distanceInMiles * rateToUse; // Use appropriate rate based on empty status and co-driver
+      // Calculate earnings based on driver's payment method
+      let earnings = 0;
 
-      // Add snow premium (additive)
-      if (hasSnow && primaryDriverSnowRate > 0) {
-        earnings += distanceInMiles * primaryDriverSnowRate;
-      }
+      if (driverPaymentMethod === 'PAID PERCENT' && driverPercentageRate > 0) {
+        // Owner-operator or percent-based driver: percentage of the order's gross rate
+        const orderRevenue = order.rate || order.totalRate || order.amount || 0;
+        earnings = (orderRevenue * driverPercentageRate) / 100;
+      } else if (driverPaymentMethod === 'PAID BY TRIP' && driverPerTripAmount > 0) {
+        earnings = driverPerTripAmount;
+      } else if (driverPaymentMethod === 'PAID PER HOUR' && driverHourlyRate > 0) {
+        const tripHours = (order.tripDurationHours || 0);
+        earnings = tripHours > 0 ? tripHours * driverHourlyRate : distanceInMiles * driverHourlyRate;
+      } else if (driverPaymentMethod === 'PAID PER DAY' && driverDailyRate > 0) {
+        const tripDays = (order.tripDurationDays || 0);
+        earnings = tripDays > 0 ? tripDays * driverDailyRate : driverDailyRate;
+      } else {
+        // Default: per-mile calculation using the appropriate rate
+        earnings = distanceInMiles * rateToUse;
 
-      // Add high temperature premium (additive)
-      if (hasHighTemp && primaryDriverHighTempRate > 0) {
-        earnings += distanceInMiles * primaryDriverHighTempRate;
-      }
+        // Add snow premium (additive)
+        if (hasSnow && primaryDriverSnowRate > 0) {
+          earnings += distanceInMiles * primaryDriverSnowRate;
+        }
 
-      // If no rate found, fallback to legacy mileRate
-      if (rateToUse === 0 && primaryDriverMileRate > 0) {
-        earnings = distanceInMiles * primaryDriverMileRate;
+        // Add high temperature premium (additive)
+        if (hasHighTemp && primaryDriverHighTempRate > 0) {
+          earnings += distanceInMiles * primaryDriverHighTempRate;
+        }
+
+        // If no rate found, fallback to legacy mileRate
+        if (rateToUse === 0 && primaryDriverMileRate > 0) {
+          earnings = distanceInMiles * primaryDriverMileRate;
+        }
       }
 
       // Determine rate type based on empty flag and co-driver presence
@@ -3929,9 +3951,9 @@ export const getCompletedOrdersByDriver = async (req, res) => {
         distance: Math.round(distance), // km
         distanceInMiles: Math.round(distanceInMiles * 100) / 100, // Round to 2 decimal places
         mileRate: rateToUse || primaryDriverMileRate,
-        baseRate: rateToUse, // Use the rate that was actually used (ALONE or TEAM)
-        rateType: rateType, // Indicate which rate type was used
-        rateTypeLabel: rateTypeLabel, // Label for display
+        baseRate: driverPaymentMethod === 'PAID PERCENT' ? driverPercentageRate : rateToUse,
+        rateType: driverPaymentMethod !== 'PAID PER MILE' ? driverPaymentMethod : rateType,
+        rateTypeLabel: driverPaymentMethod !== 'PAID PER MILE' ? driverPaymentMethod : rateTypeLabel,
         snowRate: primaryDriverSnowRate,
         highTempRate: primaryDriverHighTempRate,
         weatherConditions: {

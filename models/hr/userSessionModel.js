@@ -42,9 +42,13 @@ const userSessionSchema = new mongoose.Schema(
       type: Number, 
       default: 0 
     }, // Calculated active time excluding inactivity periods
-    notes: { 
-      type: String 
-    }
+    notes: {
+      type: String
+    },
+    breaks: [{
+      start: { type: Date },
+      end: { type: Date }
+    }]
   },
   { timestamps: true }
 );

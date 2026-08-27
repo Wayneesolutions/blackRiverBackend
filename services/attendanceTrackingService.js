@@ -4,9 +4,9 @@ import { User } from "../models/driver/userModel.js";
 import mongoose from "mongoose";
 
 /**
- * Roles that should have automatic attendance tracking
+ * Roles auto-tracked at login (session created on login)
  */
-const TRACKED_ROLES = [
+const AUTO_TRACKED_ROLES = [
   'hr',
   'dispatcher',
   'Fleet Maintenance Manager',
@@ -15,11 +15,17 @@ const TRACKED_ROLES = [
 ];
 
 /**
- * Check if a role should be tracked for attendance
+ * Roles tracked via manual Start Work button (session NOT created at login)
  */
-export const shouldTrackAttendance = (role) => {
-  return TRACKED_ROLES.includes(role);
-};
+const MANUAL_TRACKED_ROLES = [
+  'accountant',
+  'Maintenance Crew (Mechanics)'
+];
+
+const TRACKED_ROLES = [...AUTO_TRACKED_ROLES, ...MANUAL_TRACKED_ROLES];
+
+export const shouldTrackAttendance = (role) => TRACKED_ROLES.includes(role);
+export const shouldAutoTrackLogin = (role) => AUTO_TRACKED_ROLES.includes(role);
 
 /**
  * Record user login session
@@ -27,8 +33,8 @@ export const shouldTrackAttendance = (role) => {
 export const recordLogin = async (userId, companyId) => {
   try {
     const user = await User.findById(userId);
-    if (!user || !shouldTrackAttendance(user.role)) {
-      return null; // Don't track for roles that shouldn't be tracked
+    if (!user || !shouldAutoTrackLogin(user.role)) {
+      return null; // Manual-start roles (accountant, mechanic) don't auto-create session at login
     }
 
     // Check if there's an active session (shouldn't happen, but handle it)
@@ -59,9 +65,10 @@ export const recordLogin = async (userId, companyId) => {
 
     if (recentLogout && recentLogout.logoutTime) {
       const timeSinceLogout = (now - new Date(recentLogout.logoutTime)) / (1000 * 60); // minutes
-      
-      // If logged out within 30 minutes, merge sessions
-      if (timeSinceLogout <= 30) {
+      const sameDay = new Date(recentLogout.logoutTime).toDateString() === now.toDateString();
+
+      // Merge only within 30 minutes AND on the same calendar day
+      if (timeSinceLogout <= 30 && sameDay) {
         shouldMerge = true;
         previousSession = recentLogout;
       }
@@ -303,6 +310,73 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
   } catch (error) {
     console.error('Error recording logout:', error);
     return null;
+  }
+};
+
+/**
+ * Close an active session that belongs to a previous calendar day.
+ * Creates/updates an attendance record for that day, then marks the session inactive.
+ * Called automatically when getCurrentSession detects a cross-midnight active session.
+ */
+export const closeDayBoundarySession = async (session) => {
+  try {
+    const loginTime = new Date(session.loginTime);
+    const sessionDay = new Date(loginTime);
+    sessionDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(sessionDay);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Cap any open breaks at end of day, sum total break time
+    const totalBreakMs = (session.breaks || []).reduce((sum, b) => {
+      if (!b.start) return sum;
+      const end = b.end ? new Date(b.end) : endOfDay;
+      return sum + Math.max(0, end - new Date(b.start));
+    }, 0);
+    const totalBreakMinutes = Math.round(totalBreakMs / 60000);
+    const activeMinutes = Math.max(0, (endOfDay - loginTime) / 60000 - totalBreakMinutes);
+
+    await UserSession.findByIdAndUpdate(session._id, {
+      isActive: false,
+      logoutTime: endOfDay,
+      autoLoggedOut: true,
+      totalActiveMinutes: activeMinutes
+    });
+
+    const checkInTime = loginTime.toTimeString().slice(0, 5);
+    const checkOutTime = '23:59';
+    const totalHours = activeMinutes / 60;
+
+    const filter = session.company
+      ? { company: session.company, employee: session.user, date: { $gte: sessionDay, $lte: endOfDay } }
+      : { employee: session.user, date: { $gte: sessionDay, $lte: endOfDay } };
+
+    const existing = await Attendance.findOne(filter);
+    if (existing) {
+      existing.checkOut = checkOutTime;
+      existing.totalHours = Math.max(existing.totalHours || 0, totalHours);
+      if (!existing.notes?.includes('Auto-closed at day boundary')) {
+        existing.notes = existing.notes
+          ? `${existing.notes}; Auto-closed at day boundary`
+          : 'Auto-closed at day boundary';
+      }
+      await existing.save();
+    } else {
+      await Attendance.create({
+        employee: session.user,
+        date: sessionDay,
+        checkIn: checkInTime,
+        checkOut: checkOutTime,
+        status: 'present',
+        totalHours,
+        notes: 'Auto-closed at day boundary',
+        company: session.company || null,
+        isAutoTracked: true
+      });
+    }
+
+    console.log(`✅ Closed day-boundary session for user ${session.user}`);
+  } catch (error) {
+    console.error('Error closing day-boundary session:', error);
   }
 };
 

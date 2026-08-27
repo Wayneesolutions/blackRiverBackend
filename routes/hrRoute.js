@@ -7,6 +7,7 @@ import { getUserCompanyId } from '../utils/companyFilter.js';
 import { getCombinedFilter } from '../utils/trialDataFilter.js';
 import { createDriver, updateDriver, getDriverById, updateDriverStatus, deleteDriver, getAllUsersForDrugTest, uploadDriverDrugTest, deleteDriverDrugTest, getDriverDrugTestSignedUrl, getDriverTicketSignedUrl } from '../controllers/driverController.js';
 import { generateAIDriverPayroll, bulkAnalyzeAIDriverPayrolls, bulkCreateDriverPayrolls } from '../controllers/hr/driverPayrollAIController.js';
+import { getHRAuditTrail } from '../controllers/hr/hrAuditController.js';
 
 // Receipts controllers
 import {
@@ -124,7 +125,11 @@ import {
 import {
   listAttendance,
   upsertAttendance,
-  deleteAttendance
+  deleteAttendance,
+  startBreak,
+  endBreak,
+  getCurrentSession,
+  startSession
 } from '../controllers/hr/attendanceController.js';
 
 // User Profile controllers
@@ -156,6 +161,13 @@ import {
   deleteDocument,
   getSignedVehicleDocumentUrl
 } from '../controllers/vehicleDocumentController.js';
+
+// HR Note controllers
+import {
+  addHRNote,
+  getHRNotes,
+  deleteHRNote
+} from '../controllers/hr/hrNoteController.js';
 
 // Load controllers (for completed loads in payroll)
 import {
@@ -1924,6 +1936,52 @@ hrRoute.delete(
   deleteAttendance
 );
 
+hrRoute.post(
+  '/attendance/break/start',
+  authMiddleware,
+  startBreak
+);
+
+hrRoute.post(
+  '/attendance/break/end',
+  authMiddleware,
+  endBreak
+);
+
+hrRoute.get(
+  '/attendance/session/current',
+  authMiddleware,
+  getCurrentSession
+);
+
+hrRoute.post(
+  '/attendance/session/start',
+  authMiddleware,
+  startSession
+);
+
+// ==================== HR NOTES ROUTES ====================
+hrRoute.get(
+  '/employees/:userId/notes',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  getHRNotes
+);
+
+hrRoute.post(
+  '/employees/:userId/notes',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  addHRNote
+);
+
+hrRoute.delete(
+  '/employees/notes/:noteId',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr'),
+  deleteHRNote
+);
+
 // ==================== USER PROFILES ROUTES ====================
 hrRoute.get(
   '/user-profiles',
@@ -2040,4 +2098,12 @@ hrRoute.get(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'hr'),
   getELDDocumentSignedUrl
+);
+
+// ==================== HR AUDIT TRAIL ====================
+hrRoute.get(
+  '/audit-trail',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr'),
+  getHRAuditTrail
 );

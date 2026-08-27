@@ -119,7 +119,9 @@ import {
   updateFuelReport,
   extractFuelReceipt,
   parseCsvHeaders,
-  importFuelReportsFromCsv
+  importFuelReportsFromCsv,
+  parseFuelCardPdf,
+  confirmFuelCardImport
 } from '../controllers/fuelReportsController.js'
 import {
   createOrder,
@@ -324,6 +326,21 @@ dispatcherRoute.post(
   authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
   FileUploadMemory.single('csv'),
   importFuelReportsFromCsv
+)
+
+dispatcherRoute.post(
+  '/fuel-report/parse-fuel-card',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  FileUploadMemory.single('pdf'),
+  parseFuelCardPdf
+)
+
+dispatcherRoute.post(
+  '/fuel-report/confirm-fuel-card',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  confirmFuelCardImport
 )
 
 // Places

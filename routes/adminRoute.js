@@ -736,6 +736,7 @@ adminRoute.post(
   '/insurance-claims',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Compliance Manager', 'Fleet Maintenance Manager'),
+  FileUpload.array('documents', 10),
   createInsuranceClaim
 )
 
@@ -764,6 +765,7 @@ adminRoute.put(
   '/insurance-claims/:id',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Compliance Manager', 'Fleet Maintenance Manager'),
+  FileUpload.array('documents', 10),
   updateInsuranceClaim
 )
 
