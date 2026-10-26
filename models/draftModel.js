@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 // Entity types line up 1:1 with the dispatch/HR portal's four managed entities
 // and with the {entityType} route segment used by the draft API.
-export const DRAFT_ENTITY_TYPES = ["drivers", "trucks", "trailers", "employees"];
+export const DRAFT_ENTITY_TYPES = ["drivers", "trucks", "trailers", "employees", "trips"];
 
 const draftSchema = new mongoose.Schema(
   {

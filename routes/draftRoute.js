@@ -5,7 +5,7 @@ import { authMiddleware } from "../middleware/authMiddleware.js";
 export const draftRoute = express.Router();
 
 // Server-side autosave draft store — survives a full browser/device loss.
-// :entityType is one of drivers|trucks|trailers|employees; :entityId is "new"
+// :entityType is one of drivers|trucks|trailers|employees|trips; :entityId is "new"
 // for a not-yet-created record, otherwise the record's id.
 
 draftRoute.get("/:entityType/:entityId", authMiddleware, getDraft);
