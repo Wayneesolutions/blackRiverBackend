@@ -25,7 +25,20 @@ import { authorizeRoles } from '../middleware/authRoles.js'
 export const superAdminRoute = express.Router()
 
 superAdminRoute.post('/login', loginSuperAdmin)
-superAdminRoute.post('/create', registerSuperAdmin)
+// Creating a Super Admin is only allowed for an existing, logged-in Super Admin.
+// The one exception is first-time setup, when no Super Admin exists yet.
+const requireSuperAdminForCreate = async (req, res, next) => {
+  try {
+    const { User } = await import('../models/driver/userModel.js')
+    const existing = await User.countDocuments({ role: 'superadmin' })
+    if (existing === 0) return next()
+    return authMiddleware(req, res, () => authorizeRoles('superadmin')(req, res, next))
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Unable to verify permissions' })
+  }
+}
+
+superAdminRoute.post('/create', requireSuperAdminForCreate, registerSuperAdmin)
 
 // Dashboard
 superAdminRoute.get(
