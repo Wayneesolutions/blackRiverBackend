@@ -2390,7 +2390,16 @@ If you didn't request this, you can safely ignore this email.
   }
 };
 
-export const sendContactInquiryEmail = async ({ name, email, company, fleetSize, message }) => {
+const escapeHtml = (v) =>
+  String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+export const sendContactInquiryEmail = async ({ name: rawName, email: rawEmail, company: rawCompany, fleetSize: rawFleet, message: rawMessage, language }) => {
+  // Escape visitor input before putting it into the HTML email
+  const name = escapeHtml(rawName);
+  const email = escapeHtml(rawEmail);
+  const company = escapeHtml(rawCompany);
+  const fleetSize = escapeHtml(rawFleet);
+  const message = escapeHtml(rawMessage);
   try {
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
       return { success: false, message: 'SMTP configuration is incomplete.', error: 'SMTP_NOT_CONFIGURED' };
@@ -2448,8 +2457,8 @@ export const sendContactInquiryEmail = async ({ name, email, company, fleetSize,
     const info = await transporter.sendMail({
       from: `"Logistiq Website" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: process.env.CONTACT_INQUIRY_EMAIL || process.env.SMTP_USER,
-      replyTo: email,
-      subject: `Website Inquiry from ${name}${company ? ` — ${company}` : ''}`,
+      replyTo: rawEmail,
+      subject: `Website Inquiry from ${rawName}${rawCompany ? ` — ${rawCompany}` : ''}${language === 'fr' ? ' [FR]' : ''}`,
       html: htmlContent,
     });
 
