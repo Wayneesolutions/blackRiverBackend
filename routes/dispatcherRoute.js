@@ -218,7 +218,8 @@ dispatcherRoute.get(
 dispatcherRoute.get(
   '/orders/tracking',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'accountant'),
+  // Read-only: every department can view live trip tracking from the shared GPS dashboard
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'accountant', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'Maintenance Crew (Mechanics)'),
   getActiveOrdersWithTracking
 )
 
