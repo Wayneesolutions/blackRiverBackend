@@ -15,6 +15,26 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 /**
  * Get OpenAI API key from environment variables
  */
+/**
+ * Map OpenAI account problems to a clear message for the user. The raw OpenAI text
+ * ("You exceeded your current quota...") reads like a problem with the customer's
+ * own account, when it is actually the platform's AI billing.
+ */
+export const friendlyOpenAIError = (error) => {
+  const status = error?.response?.status;
+  const code = error?.response?.data?.error?.code || error?.response?.data?.error?.type;
+  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached') {
+    return 'AI document reading is temporarily unavailable (AI service credits exhausted). Our team has been notified. Please try again later or enter the details manually.';
+  }
+  if (status === 401 || code === 'invalid_api_key') {
+    return 'AI document reading is temporarily unavailable (AI service key is invalid). Please contact support.';
+  }
+  if (status === 429) {
+    return 'AI document reading is busy right now. Please wait a minute and try again.';
+  }
+  return null;
+};
+
 const getOpenAIKey = () => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -2054,6 +2074,10 @@ Guidelines:
     }
   } catch (error) {
     console.error('Error in extractCarrierProfileData:', error.response?.data || error.message);
+    const friendly = friendlyOpenAIError(error);
+    if (friendly) {
+      return { success: false, error: friendly, data: null };
+    }
     return {
       success: false,
       error: error.response?.data?.error?.message || error.message || 'Failed to extract carrier profile data',
