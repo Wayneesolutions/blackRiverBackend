@@ -828,6 +828,12 @@ export const initSocket = (server) => {
           console.log(`📊 Socket ${socket.id} is now in rooms:`, Array.from(socket.rooms));
         }
 
+        // Every non-driver staff member (all departments) joins the company staff room,
+        // used for driver-message notifications across the whole web app
+        if (user.role !== 'driver' && socketCompanyId) {
+          socket.join(`staff_${socketCompanyId}`);
+        }
+
         socket.emit("authenticated", {
           userId: user._id.toString(),
           name: user.name || user.email,

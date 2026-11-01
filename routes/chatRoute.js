@@ -16,7 +16,8 @@ import {
   sendDriverChatMessage,
   markDriverMessagesAsRead,
   getDriverUnreadMessageCount,
-  getDriversLastMessages
+  getDriversLastMessages,
+  broadcastDriverMessage
 } from '../controllers/chat/chatController.js';
 
 export const chatRoute = express.Router();
@@ -214,5 +215,12 @@ chatRoute.get(
   '/drivers/last-messages',
   authMiddleware,
   getDriversLastMessages
+);
+
+// Group / broadcast message from any staff department to all or selected drivers
+chatRoute.post(
+  '/drivers/broadcast',
+  authMiddleware,
+  broadcastDriverMessage
 );
 
