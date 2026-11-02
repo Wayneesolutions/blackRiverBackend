@@ -890,7 +890,8 @@ adminRoute.get("/fleet-management/monthly-cost",authMiddleware,
 adminRoute.get(
   '/fleet-maintenance/units',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'dispatcher', 'hr', 'Compliance Manager','accounts', 'accountant'),
+  // Read-only list; also used by the shared GPS dashboard's trailer tracker for every department
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'dispatcher', 'hr', 'Compliance Manager','accounts', 'accountant', 'safety officer', 'Maintenance Crew (Mechanics)'),
   listFleetUnits
 );
 
