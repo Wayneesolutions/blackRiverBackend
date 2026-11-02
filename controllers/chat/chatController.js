@@ -1588,7 +1588,13 @@ export const sendDriverChatMessage = async (req, res) => {
     // Emit socket event for real-time updates
     const io = req.app.get('io');
     if (io) {
-      io.to(`driver-chat-${driverId}`).emit('newChatMessage', populatedMessage);
+      const rooms = [`driver-chat-${driverId}`];
+      // Messages from a driver (mobile app) notify every staff member of the company,
+      // not only whoever has that driver's chat open. Socket.IO de-duplicates sockets
+      // that are in both rooms.
+      const msgCompany = (companyId || driver.company)?.toString();
+      if (senderType === 'driver' && msgCompany) rooms.push(`staff_${msgCompany}`);
+      io.to(rooms).emit('newChatMessage', populatedMessage);
     }
 
     // Send push notification to driver if message is from dispatcher
@@ -1851,3 +1857,96 @@ export const getDriversLastMessages = async (req, res) => {
   }
 };
 
+
+
+/**
+ * Broadcast / group message from staff to drivers.
+ * POST /api/v1/chat/drivers/broadcast
+ * body: { message: string, driverIds?: string[], allDrivers?: boolean }
+ * Creates one message in each selected driver's chat (so replies stay 1-to-1),
+ * emits it in real time and sends a push notification to each driver's app.
+ */
+export const broadcastDriverMessage = async (req, res) => {
+  try {
+    if (req.user?.role === 'driver') {
+      return res.status(403).json({ success: false, message: "Drivers cannot send broadcast messages." });
+    }
+
+    const text = (req.body?.message || '').toString().trim();
+    const allDrivers = req.body?.allDrivers === true || req.body?.allDrivers === 'true';
+    const driverIds = Array.isArray(req.body?.driverIds) ? req.body.driverIds : [];
+
+    if (!text) {
+      return res.status(400).json({ success: false, message: "Message is required." });
+    }
+    if (text.length > 2000) {
+      return res.status(400).json({ success: false, message: "Message is too long (max 2000 characters)." });
+    }
+    if (!allDrivers && driverIds.length === 0) {
+      return res.status(400).json({ success: false, message: "Select at least one driver or choose all drivers." });
+    }
+
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+    if (!isSuperadmin && !companyId) {
+      return res.status(403).json({ success: false, message: "No company assigned. Please complete company settings." });
+    }
+
+    const filter = { role: 'driver', status: { $ne: 'inactive' } };
+    if (companyId) filter.company = new mongoose.Types.ObjectId(companyId);
+    if (!allDrivers) {
+      const validIds = driverIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+      if (validIds.length === 0) {
+        return res.status(400).json({ success: false, message: "No valid drivers selected." });
+      }
+      filter._id = { $in: validIds.map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+
+    const drivers = await User.find(filter).select('_id name company expoPushToken').lean();
+    if (drivers.length === 0) {
+      return res.status(404).json({ success: false, message: "No active drivers found for this selection." });
+    }
+
+    const senderId = req.user._id || req.user.id;
+    const senderName = req.user.name || req.user.email || 'Office';
+    const docs = drivers.map((d) => ({
+      driverId: d._id,
+      senderId,
+      senderType: 'dispatcher',
+      senderName,
+      message: text,
+      company: companyId || d.company,
+    }));
+    const created = await ChatMessage.insertMany(docs);
+
+    const io = req.app.get('io');
+    if (io) {
+      created.forEach((m) => {
+        const payload = { ...m.toObject(), driverId: m.driverId.toString(), senderId: { _id: senderId, name: senderName } };
+        io.to(`driver-chat-${m.driverId.toString()}`).emit('newChatMessage', payload);
+      });
+    }
+
+    // Push notifications (best effort, don't fail the request)
+    await Promise.allSettled(
+      drivers
+        .filter((d) => d.expoPushToken)
+        .map((d) =>
+          sendPushToDriver(d.expoPushToken, senderName, text, {
+            type: 'chat',
+            driverId: d._id.toString(),
+            channelId: 'logistiq-chat',
+          })
+        )
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: `Message sent to ${created.length} driver${created.length === 1 ? '' : 's'}`,
+      data: { sentCount: created.length },
+    });
+  } catch (error) {
+    console.error('Error broadcasting driver message:', error);
+    return res.status(500).json({ success: false, message: "Failed to send message to drivers." });
+  }
+};
