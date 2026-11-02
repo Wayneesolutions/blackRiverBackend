@@ -46,6 +46,7 @@ import crypto from "crypto";
 import { authMiddleware } from "./middleware/authMiddleware.js";
 import { getCurrentUserProfile, updateCurrentUserProfile, changePassword } from "./controllers/user/userController.js";
 import { sendPasswordResetEmail, sendContactInquiryEmail } from "./services/emailService.js";
+import { ContactInquiry } from "./models/contactInquiryModel.js";
 import { apiLogger } from "./middleware/apiLogger.js";
 
 // (async () => {
@@ -139,19 +140,43 @@ app.get("/api/v1/health", (req, res) => {
 app.get("/api/v1/config", getPublicConfig);
 
 // Public contact form endpoint (no auth required)
+// The inquiry is saved first, then the notification email is attempted. If SMTP fails
+// the lead is still stored (visible in Super Admin → Website Inquiries) and the visitor
+// still gets a success message instead of "Failed to send email".
 app.post("/api/v1/public/contact", async (req, res) => {
   try {
-    const { name, email, company, fleetSize, message } = req.body;
+    const clean = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+    const name = clean(req.body?.name, 200);
+    const email = clean(req.body?.email, 200);
+    const company = clean(req.body?.company, 200);
+    const fleetSize = clean(String(req.body?.fleetSize ?? ""), 50);
+    const message = clean(req.body?.message, 5000);
+    const language = req.body?.language === "fr" ? "fr" : "en";
+
     if (!name || !email || !message) {
       return res.status(400).json({ success: false, message: "Name, email, and message are required." });
     }
-    const result = await sendContactInquiryEmail({ name, email, company, fleetSize, message });
-    if (!result.success) {
-      return res.status(500).json({ success: false, message: "Failed to send email. Please try again later." });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, message: "Please enter a valid email address." });
     }
+
+    const inquiry = await ContactInquiry.create({
+      name, email, company, fleetSize, message, language,
+      ip: (req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").toString().split(",")[0].trim(),
+    });
+
+    const result = await sendContactInquiryEmail({ name, email, company, fleetSize, message, language });
+    inquiry.emailSent = !!result.success;
+    if (!result.success) {
+      inquiry.emailError = (result.error || result.message || "unknown").toString().slice(0, 500);
+      console.error("❌ [CONTACT] Inquiry saved but notification email failed:", { id: inquiry._id.toString(), error: inquiry.emailError });
+    }
+    await inquiry.save();
+
     res.json({ success: true, message: "Your message has been sent. We'll be in touch shortly." });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("❌ [CONTACT] Failed to process contact inquiry:", error.message);
+    res.status(500).json({ success: false, message: "Failed to send. Please try again." });
   }
 });
 

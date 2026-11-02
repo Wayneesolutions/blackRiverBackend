@@ -22,6 +22,7 @@ import { getSuperAdminRevenue,getSuperAdminInvoices } from '../controllers/super
 import { getSuperAdminSettings, updateSuperAdminSettings } from '../controllers/superAdminSettingsController.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { authorizeRoles } from '../middleware/authRoles.js'
+import { ContactInquiry } from '../models/contactInquiryModel.js'
 export const superAdminRoute = express.Router()
 
 superAdminRoute.post('/login', loginSuperAdmin)
@@ -141,4 +142,39 @@ superAdminRoute.get(
   authMiddleware,
   authorizeRoles('superadmin'),
   getSuperAdminInvoices
+)
+
+// Website contact-form leads (logistiqinnovations.ca/contact)
+superAdminRoute.get(
+  '/contact-inquiries',
+  authMiddleware,
+  authorizeRoles('superadmin'),
+  async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500)
+      const inquiries = await ContactInquiry.find({}).sort({ createdAt: -1 }).limit(limit).lean()
+      res.json({ success: true, data: inquiries })
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to load inquiries' })
+    }
+  }
+)
+
+superAdminRoute.patch(
+  '/contact-inquiries/:id/status',
+  authMiddleware,
+  authorizeRoles('superadmin'),
+  async (req, res) => {
+    try {
+      const { status } = req.body || {}
+      if (!['new', 'contacted', 'closed'].includes(status)) {
+        return res.status(400).json({ success: false, message: 'Invalid status' })
+      }
+      const updated = await ContactInquiry.findByIdAndUpdate(req.params.id, { status }, { new: true }).lean()
+      if (!updated) return res.status(404).json({ success: false, message: 'Inquiry not found' })
+      res.json({ success: true, data: updated })
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to update inquiry' })
+    }
+  }
 )
