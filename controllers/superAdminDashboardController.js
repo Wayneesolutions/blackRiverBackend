@@ -60,11 +60,8 @@ export const getSuperAdminDashboard = async (req, res) => {
     const startOfLastMonth = moment(now).subtract(1, 'month').startOf('month').toDate();
     const endOfLastMonth = moment(now).subtract(1, 'month').endOf('month').toDate();
 
-    // 1. Get Total Customers (admins) - filtered by time range
-    const totalCustomers = await User.countDocuments({ 
-      role: 'admin',
-      joinDate: { $gte: startDate }
-    });
+    // 1. Get Total Customers (admins) - all time, so it can never be lower than Active Customers
+    const totalCustomers = await User.countDocuments({ role: 'admin' });
     const activeCustomersInRange = await User.countDocuments({ 
       role: 'admin', 
       status: 'active',
@@ -86,22 +83,11 @@ export const getSuperAdminDashboard = async (req, res) => {
       }
     });
 
-    // 2. Get Subscription Statistics - filtered by time range
-    const totalSubscriptions = await Subscription.countDocuments({
-      createdAt: { $gte: startDate }
-    });
-    const activeSubscriptions = await Subscription.countDocuments({ 
-      status: 'active',
-      createdAt: { $gte: startDate }
-    });
-    const pendingSubscriptions = await Subscription.countDocuments({ 
-      status: 'pending',
-      createdAt: { $gte: startDate }
-    });
-    const cancelledSubscriptions = await Subscription.countDocuments({ 
-      status: 'cancelled',
-      createdAt: { $gte: startDate }
-    });
+    // 2. Get Subscription Statistics - current state, regardless of when each one was created
+    const totalSubscriptions = await Subscription.countDocuments({});
+    const activeSubscriptions = await Subscription.countDocuments({ status: 'active' });
+    const pendingSubscriptions = await Subscription.countDocuments({ status: 'pending' });
+    const cancelledSubscriptions = await Subscription.countDocuments({ status: 'cancelled' });
 
     // 3. Calculate Revenue Metrics - filtered by time range
     // Total lifetime revenue (one-time payments) in range

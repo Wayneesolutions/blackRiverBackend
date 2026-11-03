@@ -35,6 +35,36 @@ export const friendlyOpenAIError = (error) => {
   return null;
 };
 
+const RATE_LIMIT_RETRIES = 2;
+const MAX_RETRY_WAIT_MS = 30000;
+
+const isRetryableRateLimit = (error) => {
+  const code = error?.response?.data?.error?.code || error?.response?.data?.error?.type;
+  return error?.response?.status === 429
+    && code !== 'insufficient_quota'
+    && code !== 'billing_hard_limit_reached';
+};
+
+const retryAfterMs = (error, attempt) => {
+  const seconds = Number(error?.response?.headers?.['retry-after']);
+  const wait = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 5000 * 2 ** attempt;
+  return Math.min(wait, MAX_RETRY_WAIT_MS);
+};
+
+/** Run an OpenAI request, waiting and retrying when it is rate limited (not when credits ran out). */
+const withRateLimitRetry = async (request) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      if (!isRetryableRateLimit(error) || attempt >= RATE_LIMIT_RETRIES) throw error;
+      const wait = retryAfterMs(error, attempt);
+      console.warn(`⏳ OpenAI rate limited, retrying in ${wait}ms (retry ${attempt + 1}/${RATE_LIMIT_RETRIES}):`, error.response?.data?.error?.message);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+};
+
 const getOpenAIKey = () => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -1857,7 +1887,7 @@ Guidelines:
 - Be precise with numbers and dates
 - If the document shows monthly data, extract each month's statistics separately`;
 
-    const response = await axios.post(
+    const response = await withRateLimitRetry(() => axios.post(
       OPENAI_API_URL,
       {
         model: 'gpt-4o', // Use vision-capable model
@@ -1894,7 +1924,7 @@ Guidelines:
         },
         timeout: 90000 // 90 seconds timeout for document processing
       }
-    );
+    ));
 
     // Log the full response for debugging
     console.log('📥 OpenAI API Response:', {
@@ -2076,7 +2106,14 @@ Guidelines:
     console.error('Error in extractCarrierProfileData:', error.response?.data || error.message);
     const friendly = friendlyOpenAIError(error);
     if (friendly) {
-      return { success: false, error: friendly, data: null };
+      const rateLimited = isRetryableRateLimit(error);
+      return {
+        success: false,
+        error: friendly,
+        data: null,
+        statusCode: rateLimited ? 429 : 503,
+        retryAfterSeconds: rateLimited ? 60 : undefined
+      };
     }
     return {
       success: false,

@@ -302,7 +302,9 @@ export const handleSubscriptionWebhook = async (req, res) => {
       const invoice = event.data.object;
       console.log("Invoice payment succeeded:", invoice.id);
 
-      const stripeSubscriptionId = invoice.subscription;
+      // Newer Stripe API versions moved invoice.subscription under invoice.parent
+      const stripeSubscriptionId = invoice.subscription
+        || invoice.parent?.subscription_details?.subscription;
 
       if (stripeSubscriptionId) {
         const subscription = await Subscription.findOne({
@@ -319,8 +321,16 @@ export const handleSubscriptionWebhook = async (req, res) => {
             subscription.installments.remaining -= 1;
           }
 
-          // Update next billing date
-          if (subscription.nextBillingDate) {
+          // Next billing date comes from the period Stripe just charged for. Adding a month
+          // to the stored date would double count the first invoice and stay in the past
+          // after any missed webhook.
+          const periodEnd = invoice.lines?.data?.[0]?.period?.end;
+          if (periodEnd) {
+            subscription.nextBillingDate = new Date(periodEnd * 1000);
+            if (subscription.subscriptionType === '1-month') {
+              subscription.endDate = subscription.nextBillingDate;
+            }
+          } else if (subscription.nextBillingDate) {
             const nextBilling = new Date(subscription.nextBillingDate);
             nextBilling.setMonth(nextBilling.getMonth() + 1);
             subscription.nextBillingDate = nextBilling;

@@ -3,6 +3,7 @@ import { TimelineEntry, TIMELINE_ENTITY_TYPES } from "../models/timelineEntryMod
 import { User } from "../models/driver/userModel.js";
 import { Vehicle } from "../models/driver/vehicleModel.js";
 import { Trailer } from "../models/driver/trailerModel.js";
+import { FleetUnit } from "../models/fleet/fleetUnitModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { handleError } from "../utils/errorHandler.js";
 
@@ -30,7 +31,14 @@ const entityExists = async (entityType, entityId, req) => {
   }
 
   const doc = await Model.findOne(query).select("_id").lean();
-  return !!doc;
+  if (doc) return true;
+
+  // Fleet Profile lists fleet units, so a truck/trailer id may belong to FleetUnit
+  if (entityType === "trucks" || entityType === "trailers") {
+    const unit = await FleetUnit.findOne(query).select("_id").lean();
+    return !!unit;
+  }
+  return false;
 };
 
 // GET /api/v1/timeline/:entityType/:entityId

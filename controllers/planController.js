@@ -178,13 +178,28 @@ export const updatePlan = async (req, res) => {
       });
     }
 
+    const trimmedName = typeof planName === 'string' ? planName.trim() : planName;
+    if (trimmedName && trimmedName !== plan.planName) {
+      const duplicate = await Plan.findOne({
+        _id: { $ne: id },
+        planName: trimmedName,
+        planType: planType || plan.planType
+      }).select('_id').lean();
+      if (duplicate) {
+        return res.status(400).json({
+          success: false,
+          message: "Plan with this name and type already exists"
+        });
+      }
+    }
+
     // If this is set as default, unset other defaults
     if (isDefault && !plan.isDefault) {
       await Plan.updateMany({ isDefault: true }, { isDefault: false });
     }
 
     const updateData = {};
-    if (planName) updateData.planName = planName;
+    if (trimmedName) updateData.planName = trimmedName;
     if (planType) updateData.planType = planType;
     if (description !== undefined) updateData.description = description;
     if (lifetime) updateData.lifetime = lifetime;

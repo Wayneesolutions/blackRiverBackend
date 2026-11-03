@@ -1432,7 +1432,18 @@ export const updateCvsaInspection = async (req, res) => {
     if (vehicleIdToUpdate !== null) updateFields.vehicle = vehicleIdToUpdate;
     if (updateData.driver !== undefined) updateFields.driver = updateData.driver;
     if (updateData.inspectorName !== undefined) updateFields.inspectorName = updateData.inspectorName;
-    if (updateData.violations !== undefined) updateFields.violations = updateData.violations;
+    if (updateData.violations !== undefined) {
+      // Multipart forms send a list as indexed fields; "[]" is how a form clears it
+      let violations = updateData.violations;
+      if (typeof violations === 'string') {
+        try {
+          violations = JSON.parse(violations);
+        } catch {
+          return res.status(400).json({ success: false, message: "Invalid violations format" });
+        }
+      }
+      updateFields.violations = Array.isArray(violations) ? violations : [];
+    }
     if (updateData.notes !== undefined) updateFields.notes = updateData.notes || null;
     if (updateData.inspectionType !== undefined) updateFields.inspectionType = updateData.inspectionType;
     if (updateData.outOfServiceDate !== undefined) updateFields.outOfServiceDate = updateData.outOfServiceDate || null;
@@ -1860,7 +1871,10 @@ export const uploadCarrierProfileDocument = async (req, res) => {
     const extractionResult = await extractCarrierProfileData(fileBuffer, req.file.mimetype);
 
     if (!extractionResult.success) {
-      return res.status(500).json({
+      if (extractionResult.retryAfterSeconds) {
+        res.set('Retry-After', String(extractionResult.retryAfterSeconds));
+      }
+      return res.status(extractionResult.statusCode || 500).json({
         success: false,
         message: extractionResult.error || "Failed to extract data from carrier profile document",
         data: null
