@@ -441,13 +441,13 @@ export const getRecentAlerts = async (req, res) => {
     // Build company filter for employee documents
     const employeeDocFilter = {
       expiryDate: { $lte: thirtyDaysFromNow },
-      status: { $in: ["expiring-soon", "pending", "valid"] }
+      status: { $in: ["expiring-soon", "pending", "valid", "expired"] }
     };
 
     // Build company filter for vehicle documents
     const vehicleDocFilter = {
       expiryDate: { $lte: thirtyDaysFromNow },
-      status: { $in: ["expiring-soon", "pending"] },
+      status: { $in: ["expiring-soon", "pending", "expired"] },
       ignoreExpiration: { $ne: true } // Exclude documents with ignoreExpiration: true
     };
 
