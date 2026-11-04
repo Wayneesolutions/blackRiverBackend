@@ -828,6 +828,12 @@ export const initSocket = (server) => {
           console.log(`📊 Socket ${socket.id} is now in rooms:`, Array.from(socket.rooms));
         }
 
+        // A driver is always in their own chat room while connected, so office messages
+        // and Compose reach them even if the app has not joined the chat yet
+        if (user.role === 'driver') {
+          socket.join(`driver-chat-${user._id.toString()}`);
+        }
+
         // Every non-driver staff member (all departments) joins the company staff room,
         // used for driver-message notifications across the whole web app
         if (user.role !== 'driver' && socketCompanyId) {
@@ -1306,22 +1312,32 @@ export const initSocket = (server) => {
     });
 
     // Send driver chat message
-    socket.on("sendDriverChatMessage", async (data) => {
+    socket.on("sendDriverChatMessage", async (data, ack) => {
+      // ack is optional: only app versions that wait for confirmation send it.
+      // Every outcome answers it, so a sender is never left guessing.
+      const respond = (payload) => {
+        if (typeof ack === "function") ack(payload);
+      };
+      const reject = (message) => {
+        socket.emit("error", { message });
+        respond({ success: false, message });
+      };
+
       try {
         if (!socketUser) {
-          socket.emit("error", { message: "Please authenticate first" });
+          reject("Please authenticate first");
           return;
         }
 
-        const { driverId, message, fileUrl, fileName, fileType, fileSize } = data;
+        const { driverId, message, fileUrl, fileName, fileType, fileSize, clientMessageId } = data || {};
 
         if (!driverId || !mongoose.Types.ObjectId.isValid(driverId)) {
-          socket.emit("error", { message: "Invalid driver ID" });
+          reject("Invalid driver ID");
           return;
         }
 
         if (!message && !fileUrl) {
-          socket.emit("error", { message: "Message or file is required" });
+          reject("Message or file is required");
           return;
         }
 
@@ -1329,7 +1345,7 @@ export const initSocket = (server) => {
         const driver = await UserModel.findById(driverId).lean();
 
         if (!driver || driver.role !== 'driver') {
-          socket.emit("error", { message: "Driver not found" });
+          reject("Driver not found");
           return;
         }
 
@@ -1341,14 +1357,29 @@ export const initSocket = (server) => {
         if (isDriver) {
           // Driver can only send to their own chat
           if (socketUser._id.toString() !== driverId) {
-            socket.emit("error", { message: "Access denied. You can only send messages to your own chat." });
+            reject("Access denied. You can only send messages to your own chat.");
             return;
           }
         } else if (!isSuperadmin && socketCompanyId) {
           // Dispatcher/admin must have company access
           const driverCompanyId = driver.company?.toString() || driver.company;
           if (driverCompanyId !== socketCompanyId) {
-            socket.emit("error", { message: "Access denied. This driver does not belong to your company." });
+            reject("Access denied. This driver does not belong to your company.");
+            return;
+          }
+        }
+
+        // A retry of a message that was already saved is confirmed without saving it again
+        if (clientMessageId) {
+          const existing = await ChatMessage.findOne({
+            driverId: new mongoose.Types.ObjectId(driverId),
+            senderId: socketUser._id,
+            clientMessageId: String(clientMessageId)
+          })
+            .populate("senderId", "name email")
+            .lean();
+          if (existing) {
+            respond({ success: true, data: existing });
             return;
           }
         }
@@ -1373,6 +1404,7 @@ export const initSocket = (server) => {
           fileName: fileName || null,
           fileType: fileType || null,
           fileSize: fileSize || null,
+          clientMessageId: clientMessageId ? String(clientMessageId) : null,
           company: socketCompanyId || driver.company
         });
 
@@ -1387,6 +1419,9 @@ export const initSocket = (server) => {
         if (populatedMessage.driverId) {
           populatedMessage.driverId = populatedMessage.driverId.toString();
         }
+
+        // The message is saved, so confirm it before the slower delivery work below
+        respond({ success: true, data: populatedMessage });
 
         // Broadcast driver's message first (real-time)
         const roomName = `driver-chat-${driverId}`;
@@ -1688,7 +1723,7 @@ export const initSocket = (server) => {
         }
       } catch (error) {
         console.error(`❌ Error sending driver chat message from ${socket.id}:`, error.message);
-        socket.emit("error", { message: error.message });
+        reject(error.message);
       }
     });
 

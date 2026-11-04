@@ -1392,6 +1392,14 @@ export const getDriverChatMessages = async (req, res) => {
       });
     }
 
+    // A driver can only read their own chat
+    if (req.user?.role === 'driver' && userId.toString() !== driverId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. You can only access your own chat."
+      });
+    }
+
     // Check company access
     if (!isSuperadmin) {
       if (!companyId) {
@@ -1475,7 +1483,7 @@ export const getDriverChatMessages = async (req, res) => {
 export const sendDriverChatMessage = async (req, res) => {
   try {
     const { driverId } = req.params;
-    const { message } = req.body;
+    const { message, clientMessageId } = req.body;
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
     const userId = req.user._id;
@@ -1523,6 +1531,24 @@ export const sendDriverChatMessage = async (req, res) => {
         return res.status(403).json({
           success: false,
           message: "Access denied. This driver does not belong to your company."
+        });
+      }
+    }
+
+    // A retry of a message that was already saved returns the saved message
+    if (clientMessageId) {
+      const existing = await ChatMessage.findOne({
+        driverId: new mongoose.Types.ObjectId(driverId),
+        senderId: userId,
+        clientMessageId: String(clientMessageId)
+      })
+        .populate("senderId", "name email")
+        .lean();
+      if (existing) {
+        return res.status(200).json({
+          success: true,
+          data: existing,
+          message: "Message already sent"
         });
       }
     }
@@ -1575,6 +1601,7 @@ export const sendDriverChatMessage = async (req, res) => {
       fileName,
       fileType,
       fileSize,
+      clientMessageId: clientMessageId ? String(clientMessageId) : null,
       company: companyId || driver.company
     });
 

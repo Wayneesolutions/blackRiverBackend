@@ -8,7 +8,8 @@ import { initSocket } from "./services/socketIo.js";
 const server = http.createServer(app);
 
 // initialize socket.io
-initSocket(server);
+// Controllers read it with req.app.get('io') to deliver messages in real time
+app.set('io', initSocket(server));
 
 const PORT = config.PORT;
 
