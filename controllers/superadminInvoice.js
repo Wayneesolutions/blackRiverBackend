@@ -91,7 +91,7 @@ export const createSubscriptionInvoice = async ({
     //   : 'monthly', // Default to monthly
 
     billingCycle:
-      type === "extra-truck"
+      subscription.subscriptionType === "extra-truck"
         ? "one-time"
         : billingCycleFor(subscription.planType, subscription.subscriptionType),
     invoiceNumber: `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, // Add random suffix to ensure uniqueness

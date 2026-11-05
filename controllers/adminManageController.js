@@ -1,6 +1,7 @@
 import { User } from "../models/driver/userModel.js";
 import { Plan } from "../models/planModel.js";
 import { Subscription } from "../models/subscriptionModel.js";
+import SuperAdminInvoice from "../models/superAdminInvoice.js";
 import { hashPassword } from "../services/bcrypt.js";
 import { checkRoleCreationPermission, getAllowedRoles } from "../utils/subscriptionPermissions.js";
 import { startTrial, resolveDefaultTrialDays } from "../utils/trialUtils.js";

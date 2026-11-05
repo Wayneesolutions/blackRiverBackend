@@ -18,7 +18,7 @@ import {
   deletePlan
 } from '../controllers/planController.js'
 import { getSuperAdminDashboard } from '../controllers/superAdminDashboardController.js'
-import { getSuperAdminRevenue,getSuperAdminInvoices } from '../controllers/superAdminRevenueController.js'
+import { getSuperAdminRevenue, getSuperAdminInvoices } from '../controllers/superAdminRevenueController.js'
 import { getSuperAdminSettings, updateSuperAdminSettings } from '../controllers/superAdminSettingsController.js'
 import { createManualInvoice, updateInvoiceStatus } from '../controllers/superadminInvoice.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
@@ -138,7 +138,7 @@ superAdminRoute.put(
   authorizeRoles('superadmin'),
   updateSuperAdminSettings
 )
-superAdminRoute.get(  
+superAdminRoute.get(
   '/invoices',
   authMiddleware,
   authorizeRoles('superadmin'),
