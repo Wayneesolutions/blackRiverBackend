@@ -375,7 +375,7 @@ export const getSuperAdminRevenue = async (req, res) => {
 
 export const getSuperAdminInvoices = async (req, res) => {
   try {
-    const invoices = await SuperAdminInvoice.find({}).populate('admin').populate('company').populate('subscriptionPlan');
+    const invoices = await SuperAdminInvoice.find({}).sort({ createdAt: -1 }).populate('admin').populate('company').populate('subscriptionPlan');
     res.json({
       success: true,
       message: "Invoices fetched successfully",

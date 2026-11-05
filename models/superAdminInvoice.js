@@ -20,10 +20,11 @@ const subscriptionInvoiceSchema = new mongoose.Schema(
       ref: "Subscription",
       required: false // Optional for backward compatibility
     },
+    // Optional so a Super Admin can bill a one-off charge that isn't tied to a plan
     subscriptionPlan: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Plan",
-      required: true
+      required: false
     },
 
     planName: {
@@ -33,7 +34,8 @@ const subscriptionInvoiceSchema = new mongoose.Schema(
 
     billingCycle: {
       type: String,
-      enum: ["monthly", "yearly"],
+      // one-time = lifetime purchase / one-off charge, installment = lifetime paid in parts
+      enum: ["monthly", "6-months", "yearly", "one-time", "installment"],
       required: true
     },
 
@@ -90,9 +92,10 @@ const subscriptionInvoiceSchema = new mongoose.Schema(
       required: true
     },
 
+    // Empty for lifetime / one-off invoices (no end to the period)
     subscriptionEndDate: {
       type: Date,
-      required: true
+      required: false
     },
 
     // Invoice status
@@ -100,6 +103,22 @@ const subscriptionInvoiceSchema = new mongoose.Schema(
       type: String,
       enum: ["generated", "cancelled"],
       default: "generated"
+    },
+
+    // stripe = created by a Stripe webhook, manual = created by a Super Admin
+    source: {
+      type: String,
+      enum: ["stripe", "manual"],
+      default: "stripe"
+    },
+
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+
+    paidAt: {
+      type: Date
     },
 
     // Extra

@@ -1,5 +1,36 @@
 import { Plan } from "../models/planModel.js";
 
+// Truck tiers must be whole numbers, ascending and back-to-back (1–10, 11–20, 21–35 …)
+// so every truck count maps to exactly one price. Returns an error message or null.
+export const validateTruckTiers = (tiers) => {
+  if (tiers === undefined || tiers === null) return null;
+  if (!Array.isArray(tiers)) return "Truck tiers must be a list";
+  if (tiers.length === 0) return "Add at least one truck tier";
+  if (tiers.length > 20) return "A plan can have at most 20 truck tiers";
+  const sorted = [...tiers].sort((a, b) => Number(a.minTrucks) - Number(b.minTrucks));
+  for (let i = 0; i < sorted.length; i++) {
+    const t = sorted[i];
+    const min = Number(t.minTrucks), max = Number(t.maxTrucks), price = Number(t.monthlyPrice);
+    if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1) return `Tier ${i + 1}: truck counts must be whole numbers from 1`;
+    if (max < min) return `Tier ${i + 1}: "to" trucks must be at least "from" trucks`;
+    if (isNaN(price) || price < 0) return `Tier ${i + 1}: price must be 0 or more`;
+    if (i === 0 && min !== 1) return "The first tier must start at 1 truck";
+    if (i > 0 && min !== Number(sorted[i - 1].maxTrucks) + 1) {
+      return `Tier ${i + 1} must start at ${Number(sorted[i - 1].maxTrucks) + 1} trucks (right after the previous tier)`;
+    }
+  }
+  return null;
+};
+
+const sortTiersIn = (monthly) => {
+  if (monthly?.truckPricing?.tiers) {
+    monthly.truckPricing.tiers = [...monthly.truckPricing.tiers]
+      .map(t => ({ ...t, minTrucks: Number(t.minTrucks), maxTrucks: Number(t.maxTrucks), monthlyPrice: Number(t.monthlyPrice) }))
+      .sort((a, b) => a.minTrucks - b.minTrucks);
+  }
+  return monthly;
+};
+
 // ✅ Create Plan
 export const createPlan = async (req, res) => {
   try {
@@ -33,6 +64,12 @@ export const createPlan = async (req, res) => {
         message: "Invalid planType"
       });
     };
+
+    if (planType === 'monthly') {
+      const tierError = validateTruckTiers(monthly?.truckPricing?.tiers);
+      if (tierError) return res.status(400).json({ success: false, message: tierError });
+      sortTiersIn(monthly);
+    }
 
     const existing = await Plan.findOne({ planName, planType });
 
@@ -176,6 +213,12 @@ export const updatePlan = async (req, res) => {
         success: false,
         message: "Plan not found"
       });
+    }
+
+    if (monthly) {
+      const tierError = validateTruckTiers(monthly?.truckPricing?.tiers);
+      if (tierError) return res.status(400).json({ success: false, message: tierError });
+      sortTiersIn(monthly);
     }
 
     const trimmedName = typeof planName === 'string' ? planName.trim() : planName;
