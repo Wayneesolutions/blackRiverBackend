@@ -386,36 +386,3 @@ export const getSuperAdminInvoices = async (req, res) => {
     res.status(500).json({ success: false, message: "Error fetching invoices", error: error.message });
   }
 };
-
-export const updateSuperAdminInvoice = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { paymentStatus, invoiceStatus, notes } = req.body;
-
-    const allowed = { paymentStatus: ['pending', 'paid', 'failed', 'refunded'], invoiceStatus: ['generated', 'cancelled'] };
-    const update = {};
-    if (paymentStatus !== undefined) {
-      if (!allowed.paymentStatus.includes(paymentStatus))
-        return res.status(400).json({ success: false, message: `Invalid paymentStatus: ${paymentStatus}` });
-      update.paymentStatus = paymentStatus;
-    }
-    if (invoiceStatus !== undefined) {
-      if (!allowed.invoiceStatus.includes(invoiceStatus))
-        return res.status(400).json({ success: false, message: `Invalid invoiceStatus: ${invoiceStatus}` });
-      update.invoiceStatus = invoiceStatus;
-    }
-    if (notes !== undefined) update.notes = notes;
-
-    if (Object.keys(update).length === 0)
-      return res.status(400).json({ success: false, message: "Nothing to update" });
-
-    const invoice = await SuperAdminInvoice.findByIdAndUpdate(id, { $set: update }, { new: true, runValidators: true })
-      .populate('admin').populate('company').populate('subscriptionPlan');
-    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-
-    res.json({ success: true, message: "Invoice updated", data: invoice });
-  } catch (error) {
-    console.error("Update invoice error:", error);
-    res.status(500).json({ success: false, message: "Error updating invoice", error: error.message });
-  }
-};

@@ -14,8 +14,6 @@ export const connectDB = async () => {
     dbUrl = dbUrl.replace(/[?&]$/, '');
   }
   
-  console.log(dbUrl);
-   
   // Configure Mongoose to disable buffering (set before connection)
   mongoose.set('bufferCommands', false);
   
@@ -31,7 +29,7 @@ export const connectDB = async () => {
 
   try {
     await mongoose.connect(`${dbUrl}`, connectionOptions);
-    console.log(`mongoDB connected to ${config.USE_DB} on ${dbUrl} ✅`);
+    console.log(`mongoDB connected to ${config.USE_DB} ✅`);
     
     // Drop obsolete username_1 index if it exists (fixes E11000 duplicate key error)
     try {
