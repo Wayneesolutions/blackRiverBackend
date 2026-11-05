@@ -1950,7 +1950,10 @@ export const broadcastDriverMessage = async (req, res) => {
     if (io) {
       created.forEach((m) => {
         const payload = { ...m.toObject(), driverId: m.driverId.toString(), senderId: { _id: senderId, name: senderName } };
-        io.to(`driver-chat-${m.driverId.toString()}`).emit('newChatMessage', payload);
+        // Staff room too, so other staff see the group message live in that driver's chat
+        const rooms = [`driver-chat-${m.driverId.toString()}`];
+        if (m.company) rooms.push(`staff_${m.company.toString()}`);
+        io.to(rooms).emit('newChatMessage', payload);
       });
     }
 
