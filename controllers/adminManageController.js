@@ -4,7 +4,7 @@ import { Subscription } from "../models/subscriptionModel.js";
 import { hashPassword } from "../services/bcrypt.js";
 import { checkRoleCreationPermission, getAllowedRoles } from "../utils/subscriptionPermissions.js";
 import { startTrial, resolveDefaultTrialDays } from "../utils/trialUtils.js";
-import { calculateTruckPricing } from "./subscriptionController.js";
+import { assignPlan, resolvePlanPricing, PlanAssignmentError } from "../utils/planAssignment.js";
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
@@ -95,6 +95,25 @@ export const registerAdmin = async (req, res) => {
         success: false, 
         message: "Password must be at least 8 characters long" 
       });
+    }
+
+    // Validate the plan choice before creating anything, so a bad plan
+    // doesn't leave behind an account with no plan.
+    let planDoc = null;
+    let planPricing = null;
+    if (planRequest && planRequest.planId) {
+      if (requestingUser.role !== 'superadmin' || role !== 'admin') {
+        return res.status(403).json({ success: false, message: "Only a Super Admin can assign a plan to a new customer" });
+      }
+      planDoc = await Plan.findById(planRequest.planId);
+      try {
+        planPricing = resolvePlanPricing(planDoc, planRequest);
+      } catch (err) {
+        if (err instanceof PlanAssignmentError) {
+          return res.status(err.status).json({ success: false, message: err.message });
+        }
+        throw err;
+      }
     }
 
     // Check if admin already exists
@@ -208,7 +227,10 @@ export const createAdmin = async (req, res) => {
       status = 'active',
       policies,
       role = 'admin', // Default role is 'admin', but can create other roles if permitted
-      trialDays // Optional: Super Admin can set a custom trial length for this specific customer
+      trialDays, // Optional: Super Admin can set a custom trial length for this specific customer
+      // Optional: Super Admin picks the customer's plan while creating the account.
+      // { planId, subscriptionType, truckCount?, customAmount?, allowedRoles?, paymentStatus? }
+      plan: planRequest
     } = req.body;
 
     // Get the requesting user (admin creating another user)
@@ -224,6 +246,25 @@ export const createAdmin = async (req, res) => {
           success: false,
           message: permissionCheck.reason || "You don't have permission to create users with this role"
         });
+      }
+    }
+
+    // Validate the plan choice before creating anything, so a bad plan
+    // doesn't leave behind an account with no plan.
+    let planDoc = null;
+    let planPricing = null;
+    if (planRequest && planRequest.planId) {
+      if (requestingUser.role !== 'superadmin' || role !== 'admin') {
+        return res.status(403).json({ success: false, message: "Only a Super Admin can assign a plan to a new customer" });
+      }
+      planDoc = await Plan.findById(planRequest.planId);
+      try {
+        planPricing = resolvePlanPricing(planDoc, planRequest);
+      } catch (err) {
+        if (err instanceof PlanAssignmentError) {
+          return res.status(err.status).json({ success: false, message: err.message });
+        }
+        throw err;
       }
     }
 
@@ -280,9 +321,34 @@ export const createAdmin = async (req, res) => {
     const admin = new User(adminData);
     await admin.save();
 
-    // Start a free trial for admin role (not superadmin).
+    // Plan chosen up front → subscription + first invoice, no trial needed.
+    let assignedSubscription = null;
+    let planWarning = null;
+    if (planDoc) {
+      try {
+        const result = await assignPlan({
+          admin,
+          plan: planDoc,
+          subscriptionType: planRequest.subscriptionType,
+          truckCount: planRequest.truckCount,
+          customAmount: planRequest.customAmount,
+          allowedRoles: planRequest.allowedRoles,
+          blockedRoles: planRequest.blockedRoles,
+          paymentStatus: planRequest.paymentStatus || 'paid',
+          paymentMethod: planRequest.paymentMethod,
+          createdBy: requestingAdminId,
+          pricing: planPricing
+        });
+        assignedSubscription = result.subscription;
+      } catch (planError) {
+        console.error('Admin created but plan assignment failed:', planError);
+        planWarning = `Account created, but the plan could not be assigned (${planError.message}). Use "Assign Plan" on the account.`;
+      }
+    }
+
+    // Start a free trial for admin role (not superadmin) when no plan was assigned.
     // trialDays, if provided by the Super Admin, overrides the configured global default.
-    if (role === 'admin') {
+    if (role === 'admin' && !assignedSubscription) {
       try {
         await startTrial(admin._id, trialDays);
         console.log(`✅ Trial started for new admin: ${admin.email}`);
@@ -308,7 +374,10 @@ export const createAdmin = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Admin created successfully",
+      message: assignedSubscription
+        ? `Admin created with plan "${planDoc.planName}"`
+        : "Admin created successfully",
+      warning: planWarning || undefined,
       data: {
         id: adminObj._id,
         name: adminObj.name,
@@ -318,7 +387,8 @@ export const createAdmin = async (req, res) => {
         status: adminObj.status,
         internalId: adminObj.internalId,
         company: adminObj.company,
-        joinDate: adminObj.joinDate
+        joinDate: adminObj.joinDate,
+        subscription: assignedSubscription
       },
     });
   } catch (error) {
@@ -566,7 +636,8 @@ export const deleteAdmin = async (req, res) => {
   }
 };
 
-// ✅ Super Admin manually assigns a plan to a client (no Stripe payment collected)
+// ✅ Super Admin manually assigns a plan to a client (no Stripe payment collected).
+// Also creates the matching invoice (paid or pending) so it shows on the Invoices page.
 export const assignPlanToAdmin = async (req, res) => {
   try {
     const { id } = req.params; // target admin (client) id
@@ -577,8 +648,11 @@ export const assignPlanToAdmin = async (req, res) => {
       // Per-customer customization on top of the template plan — none of these
       // change the underlying Plan document, only this specific Subscription.
       customAmount,
-      allowedRoles: overrideAllowedRoles,
-      blockedRoles: overrideBlockedRoles
+      allowedRoles,
+      blockedRoles,
+      paymentStatus = 'paid',
+      paymentMethod,
+      notes
     } = req.body;
 
     if (!planId || !subscriptionType) {
@@ -588,135 +662,29 @@ export const assignPlanToAdmin = async (req, res) => {
       });
     }
 
-    if (customAmount !== undefined && customAmount !== null && customAmount !== '' && (isNaN(Number(customAmount)) || Number(customAmount) < 0)) {
-      return res.status(400).json({ success: false, message: "customAmount must be a non-negative number" });
-    }
-
     const admin = await User.findById(id);
     if (!admin || admin.role !== 'admin') {
       return res.status(404).json({ success: false, message: "Client account not found" });
     }
 
     const plan = await Plan.findById(planId);
-    if (!plan) {
-      return res.status(404).json({ success: false, message: "Plan not found" });
-    }
-
-    // Determine amount/currency/maxTrucks per plan type + subscriptionType,
-    // mirroring the pricing rules used by the self-service checkout flow.
-    let amount = 0;
-    let currency = 'CAD';
-    let maxTrucks = 0;
-
-    if (plan.planType === 'lifetime') {
-      if (subscriptionType === 'one-time') {
-        amount = plan.lifetime?.oneTime?.price || 0;
-        currency = plan.lifetime?.oneTime?.currency || 'CAD';
-      } else if (subscriptionType === '3-months') {
-        amount = plan.lifetime?.installments?.threeMonths?.price || 0;
-        currency = plan.lifetime?.installments?.threeMonths?.currency || 'CAD';
-      } else if (subscriptionType === '6-months') {
-        amount = plan.lifetime?.installments?.sixMonths?.price || 0;
-        currency = plan.lifetime?.installments?.sixMonths?.currency || 'CAD';
-      } else {
-        return res.status(400).json({ success: false, message: "Invalid subscriptionType for a lifetime plan" });
-      }
-    } else if (plan.planType === 'monthly') {
-      if (subscriptionType === 'full-app') {
-        amount = plan.monthly?.fullApp?.price || 0;
-        currency = plan.monthly?.fullApp?.currency || 'CAD';
-      } else if (subscriptionType === 'without-hr') {
-        amount = plan.monthly?.withoutHR?.price || 0;
-        currency = plan.monthly?.withoutHR?.currency || 'CAD';
-      } else if (['1-month', '6-months', '1-year'].includes(subscriptionType)) {
-        if (!plan.monthly?.truckPricing?.tiers?.length) {
-          return res.status(400).json({ success: false, message: "Truck pricing not configured for this plan" });
-        }
-        if (!truckCount || truckCount < 1) {
-          return res.status(400).json({ success: false, message: "truckCount is required for this subscription type" });
-        }
-        const monthlyPrice = calculateTruckPricing(truckCount, plan.monthly.truckPricing);
-        currency = plan.monthly.truckPricing.tiers[0]?.currency || 'CAD';
-        maxTrucks = truckCount;
-        if (subscriptionType === '1-month') amount = monthlyPrice;
-        else if (subscriptionType === '6-months') amount = monthlyPrice * 6;
-        else amount = monthlyPrice * 12;
-      } else {
-        return res.status(400).json({ success: false, message: "Invalid subscriptionType for a monthly plan" });
-      }
-    }
-
-    // Per-customer price override — takes precedence over the computed template price
-    if (customAmount !== undefined && customAmount !== null && customAmount !== '') {
-      amount = Number(customAmount);
-    }
-
-    // Supersede any existing active/pending-paid subscription for this client
-    await Subscription.updateMany(
-      {
-        admin: admin._id,
-        $or: [{ status: 'active' }, { status: 'pending', paymentStatus: 'paid' }]
-      },
-      { $set: { status: 'cancelled', cancelledAt: new Date() } }
-    );
-
-    const now = new Date();
-    let endDate = null;
-    let nextBillingDate = null;
-
-    if (subscriptionType === '1-month') {
-      endDate = new Date(now);
-      endDate.setMonth(endDate.getMonth() + 1);
-      nextBillingDate = endDate;
-    } else if (subscriptionType === '6-months') {
-      endDate = new Date(now);
-      endDate.setMonth(endDate.getMonth() + 6);
-      const bonusDays = plan.monthly?.truckPricing?.sixMonthBonusDays ?? 15;
-      endDate.setDate(endDate.getDate() + bonusDays);
-      nextBillingDate = endDate;
-    } else if (subscriptionType === '1-year') {
-      const freeMonths = plan.monthly?.truckPricing?.annualFreeMonths ?? 1;
-      endDate = new Date(now);
-      endDate.setMonth(endDate.getMonth() + 12 + freeMonths);
-      nextBillingDate = new Date(now);
-      nextBillingDate.setMonth(nextBillingDate.getMonth() + 12);
-    }
-    // 'one-time', '3-months' (lifetime), 'full-app', 'without-hr' → no recurring end date
-
-    const subscription = new Subscription({
-      admin: admin._id,
-      plan: plan._id,
-      planType: plan.planType,
-      subscriptionType,
-      amount,
-      currency,
-      status: 'active',
-      paymentStatus: 'paid',
-      startDate: now,
-      endDate,
-      nextBillingDate,
-      maxTrucks,
-      planSnapshot: {
-        planName: plan.planName,
-        allowedRoles: overrideAllowedRoles !== undefined
-          ? overrideAllowedRoles
-          : (plan.allowedRoles ? [...plan.allowedRoles] : undefined),
-        blockedRoles: overrideBlockedRoles !== undefined
-          ? overrideBlockedRoles
-          : (plan.blockedRoles ? [...plan.blockedRoles] : []),
-        snapshotDate: now
-      }
+    const { subscription, invoice } = await assignPlan({
+      admin, plan, subscriptionType, truckCount, customAmount,
+      allowedRoles, blockedRoles, paymentStatus, paymentMethod, notes,
+      createdBy: req.user?._id
     });
-
-    await subscription.save();
     await subscription.populate('plan', 'planName planType status');
 
     res.json({
       success: true,
       message: `Plan "${plan.planName}" assigned to ${admin.name} successfully`,
-      data: subscription
+      data: subscription,
+      invoice
     });
   } catch (err) {
+    if (err instanceof PlanAssignmentError) {
+      return res.status(err.status).json({ success: false, message: err.message });
+    }
     console.error('Error assigning plan to admin:', err);
     res.status(500).json({ success: false, message: "Server error", error: err.message });
   }
