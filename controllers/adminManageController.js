@@ -97,25 +97,6 @@ export const registerAdmin = async (req, res) => {
       });
     }
 
-    // Validate the plan choice before creating anything, so a bad plan
-    // doesn't leave behind an account with no plan.
-    let planDoc = null;
-    let planPricing = null;
-    if (planRequest && planRequest.planId) {
-      if (requestingUser.role !== 'superadmin' || role !== 'admin') {
-        return res.status(403).json({ success: false, message: "Only a Super Admin can assign a plan to a new customer" });
-      }
-      planDoc = await Plan.findById(planRequest.planId);
-      try {
-        planPricing = resolvePlanPricing(planDoc, planRequest);
-      } catch (err) {
-        if (err instanceof PlanAssignmentError) {
-          return res.status(err.status).json({ success: false, message: err.message });
-        }
-        throw err;
-      }
-    }
-
     // Check if admin already exists
     const existing = await User.findOne({ email });
     if (existing) {
