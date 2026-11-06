@@ -1,7 +1,7 @@
 import express from 'express';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/authRoles.js';
-import { FileUpload, FileUploadMemory, logFileUpload } from '../middleware/upload.js';
+import { FileUpload, FileUploadMemory, TrainingUpload, logFileUpload } from '../middleware/upload.js';
 import { User } from '../models/driver/userModel.js';
 import { getUserCompanyId } from '../utils/companyFilter.js';
 import { getCombinedFilter } from '../utils/trialDataFilter.js';
@@ -1567,7 +1567,7 @@ hrRoute.delete(
 hrRoute.post(
   '/driver/training-content',
   authMiddleware,
-  FileUpload.single('file'),
+  TrainingUpload.single('file'),
   authorizeRoles('admin', 'superadmin', 'hr'),
   createTrainingContent
 );
@@ -1592,7 +1592,7 @@ hrRoute.get(
 hrRoute.put(
   '/driver/training-content/:id',
   authMiddleware,
-  FileUpload.single('file'),
+  TrainingUpload.single('file'),
   authorizeRoles('admin', 'superadmin', 'hr'),
   updateTrainingContent
 );
