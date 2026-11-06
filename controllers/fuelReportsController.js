@@ -11,6 +11,7 @@ import Trip from "../models/tripModel.js";
 import mongoose from "mongoose";
 import { extractFuelReceiptData } from "../services/openaiService.js";
 import fs from "fs";
+import { Trailer } from "../models/driver/trailerModel.js";
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -35,6 +36,82 @@ const extractRealId = (prefixedId) => {
 const isValidObjectId = (id) => {
   if (!id) return false;
   return mongoose.Types.ObjectId.isValid(id);
+};
+
+const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Find the truck or trailer a fuel row refers to. Units live in three
+// collections (FleetUnit, Vehicle, Trailer), and a row may give the ID
+// (plain or prefixed "vehicle-"/"trailer-"), the unit number, the internal ID
+// or the plate. Returns the document or null.
+const findFuelUnit = async (rawValue, companyId) => {
+  if (rawValue === undefined || rawValue === null) return null;
+  const value = String(rawValue).trim();
+  if (!value) return null;
+
+  const companyFilter = companyId ? { company: companyId } : {};
+  const realId = extractRealId(value);
+
+  if (isValidObjectId(realId) && /^[a-f0-9]{24}$/i.test(realId)) {
+    const _id = new mongoose.Types.ObjectId(realId);
+    const byId =
+      (await FleetUnit.findOne({ _id, ...companyFilter })) ||
+      (await Vehicle.findOne({ _id, ...companyFilter })) ||
+      (await Trailer.findOne({ _id, ...companyFilter }));
+    if (byId) return byId;
+  }
+
+  const exact = new RegExp(`^${escapeRegex(realId)}$`, "i");
+  return (
+    (await FleetUnit.findOne({ $or: [{ unitNo: exact }, { internalId: exact }, { licensePlate: exact }], ...companyFilter })) ||
+    (await Vehicle.findOne({ $or: [{ unitNumber: exact }, { internalId: exact }, { plateNumber: exact }], ...companyFilter })) ||
+    (await Trailer.findOne({ $or: [{ unitNumber: exact }, { internalId: exact }, { plateNumber: exact }], ...companyFilter }))
+  );
+};
+
+// Fuel reports store the unit's ObjectId, which may point at a FleetUnit,
+// Vehicle or Trailer. Returns display fields for the table.
+const describeFuelUnit = async (unitId) => {
+  const fields = "licensePlate plateNumber vinNo vinNumber unitNo unitNumber internalId unitType makeModel make model";
+  let doc = await FleetUnit.findById(unitId).select(fields).lean();
+  let fallbackType = null;
+  if (!doc) { doc = await Vehicle.findById(unitId).select(fields).lean(); fallbackType = doc ? "Truck" : null; }
+  if (!doc) { doc = await Trailer.findById(unitId).select(fields).lean(); fallbackType = doc ? "Trailer" : null; }
+  if (!doc) return null;
+
+  let makeModel = doc.makeModel;
+  if (!makeModel || makeModel === "N/A") {
+    makeModel = [doc.make, doc.model].filter(Boolean).join(" ").trim() || "N/A";
+  }
+  const plateNumber = doc.licensePlate || doc.plateNumber || "N/A";
+  const unitNo =
+    [doc.unitNo, doc.unitNumber, doc.internalId].find((v) => v && v !== "N/A") ||
+    plateNumber;
+  return {
+    plateNumber,
+    vinNumber: doc.vinNo || doc.vinNumber || "N/A",
+    unitNo,
+    unitType: doc.unitType || fallbackType || "N/A",
+    makeModel,
+  };
+};
+
+// CSV currency text -> stored value ('USA' | 'CAD'). Unknown text -> null.
+const normalizeCurrency = (raw) => {
+  if (!raw) return null;
+  const v = String(raw).trim().toUpperCase().replace(/[^A-Z$]/g, "");
+  if (["CAD", "CA", "C$", "CDN", "CAN", "CANADIAN", "CA$"].includes(v)) return "CAD";
+  if (["USD", "USA", "US", "US$", "$"].includes(v)) return "USA";
+  return null;
+};
+
+// CSV volume unit text -> 'L' | 'gal'. Unknown text -> null.
+const normalizeVolumeUnit = (raw) => {
+  if (!raw) return null;
+  const v = String(raw).trim().toLowerCase().replace(/\./g, "");
+  if (["l", "lt", "ltr", "ltrs", "litre", "litres", "liter", "liters"].includes(v)) return "L";
+  if (["g", "gal", "gals", "gallon", "gallons", "usg"].includes(v)) return "gal";
+  return null;
 };
 
 // Create Fuel Report
@@ -154,6 +231,11 @@ export const createFuelReport = async (req, res) => {
       }
     }
     
+    // Last try: trailers, plates and case-insensitive unit numbers
+    if (!vehicleDoc) {
+      vehicleDoc = await findFuelUnit(vehicleId || vehicle, companyId);
+    }
+
     if (!vehicleDoc) {
       console.error(`Vehicle not found. Searched with:`, {
         originalVehicle: vehicleId,
@@ -404,6 +486,9 @@ export const updateFuelReport = async (req, res) => {
       }
       
       if (!vehicleDoc) {
+        vehicleDoc = await findFuelUnit(vehicleUpdate, companyId);
+      }
+      if (!vehicleDoc) {
         return res.status(404).json({ 
           success: false, 
           message: `Vehicle not found with ID: ${vehicleUpdate}. Please ensure the vehicle exists and belongs to your company.` 
@@ -456,6 +541,9 @@ export const updateFuelReport = async (req, res) => {
         } catch (err) {
           console.error(`Error finding Unit by _id ${realUnitId}:`, err.message);
         }
+      }
+      if (!unitDoc) {
+        unitDoc = await findFuelUnit(unitUpdate, companyId);
       }
       
       if (unitDoc) {
@@ -631,100 +719,20 @@ export const getFuelReports = async (req, res) => {
       // Store original vehicle ID before populating (needed for trip matching)
       const originalVehicleId = report.vehicle;
       
-      // Populate vehicle field - try FleetUnit first, then Vehicle
+      // Populate vehicle field (FleetUnit, Vehicle or Trailer)
       if (report.vehicle) {
-        // Try FleetUnit first
-        let vehicleDoc = await FleetUnit.findById(report.vehicle)
-          .select("licensePlate vinNo unitNo unitType makeModel make model internalId")
-          .lean();
-        
-        // If not found in FleetUnit, try Vehicle model
-        if (!vehicleDoc) {
-          vehicleDoc = await Vehicle.findById(report.vehicle)
-            .select("plateNumber vinNumber make model")
-            .lean();
-        }
-        
-        if (vehicleDoc) {
-          // Construct makeModel from make and model if makeModel is not available
-          let makeModel = vehicleDoc.makeModel;
-          if (!makeModel || makeModel === 'N/A') {
-            const make = vehicleDoc.make || '';
-            const model = vehicleDoc.model || '';
-            makeModel = [make, model].filter(Boolean).join(' ').trim() || 'N/A';
-          }
-          
-          // Use fallback fields for unitNo
-          let unitNo = vehicleDoc.unitNo;
-          if (!unitNo || unitNo === 'N/A') {
-            unitNo = vehicleDoc.internalId || vehicleDoc.licensePlate || 'N/A';
-          }
-          
-          // Map to consistent format
-          report.vehicle = {
-            _id: report.vehicle,
-            plateNumber: vehicleDoc.licensePlate || vehicleDoc.plateNumber || 'N/A',
-            vinNumber: vehicleDoc.vinNo || vehicleDoc.vinNumber || 'N/A',
-            unitNo: unitNo,
-            unitType: vehicleDoc.unitType || 'N/A',
-            makeModel: makeModel
-          };
-        } else {
-          report.vehicle = {
-            _id: report.vehicle,
-            plateNumber: 'N/A',
-            vinNumber: 'N/A',
-            unitNo: 'N/A',
-            unitType: 'N/A',
-            makeModel: 'N/A'
-          };
-        }
+        const details = await describeFuelUnit(report.vehicle);
+        report.vehicle = details
+          ? { _id: report.vehicle, ...details }
+          : { _id: report.vehicle, plateNumber: 'N/A', vinNumber: 'N/A', unitNo: 'N/A', unitType: 'N/A', makeModel: 'N/A' };
       }
 
       // Populate unit field (same as vehicle but separate field)
       if (report.unit) {
-        // Try FleetUnit first
-        let unitDoc = await FleetUnit.findById(report.unit)
-          .select("licensePlate vinNo unitNo unitType makeModel make model internalId")
-          .lean();
-        
-        // If not found in FleetUnit, try Vehicle model
-        if (!unitDoc) {
-          unitDoc = await Vehicle.findById(report.unit)
-            .select("plateNumber vinNumber make model")
-            .lean();
-        }
-        
-        if (unitDoc) {
-          // Construct makeModel from make and model if makeModel is not available
-          let makeModel = unitDoc.makeModel;
-          if (!makeModel || makeModel === 'N/A') {
-            const make = unitDoc.make || '';
-            const model = unitDoc.model || '';
-            makeModel = [make, model].filter(Boolean).join(' ').trim() || 'N/A';
-          }
-          
-          // Use fallback fields for unitNo
-          let unitNo = unitDoc.unitNo;
-          if (!unitNo || unitNo === 'N/A') {
-            unitNo = unitDoc.internalId || unitDoc.licensePlate || 'N/A';
-          }
-          
-          // Map to consistent format
-          report.unit = {
-            _id: report.unit,
-            unitNo: unitNo,
-            unitType: unitDoc.unitType || 'N/A',
-            makeModel: makeModel
-          };
-        } else {
-          report.unit = {
-            _id: report.unit,
-            unitNo: 'N/A',
-            unitType: 'N/A',
-            makeModel: 'N/A'
-          };
-        }
+        const details = await describeFuelUnit(report.unit);
+        report.unit = details
+          ? { _id: report.unit, unitNo: details.unitNo, unitType: details.unitType, makeModel: details.makeModel }
+          : { _id: report.unit, unitNo: 'N/A', unitType: 'N/A', makeModel: 'N/A' };
       } else if (report.vehicle && report.vehicle._id) {
         // If unit is not set, use vehicle as unit
         report.unit = report.vehicle;
@@ -1025,9 +1033,16 @@ export const getUnits = async (req, res) => {
       .sort({ name: 1 })
       .lean();
 
+    // Always offer litres and gallons, even before a company adds its own units
+    const names = new Set(units.map(u => String(u.name).trim().toLowerCase()));
+    const defaults = [
+      { _id: 'default-L', name: 'L' },
+      { _id: 'default-gal', name: 'gal' },
+    ].filter(d => !names.has(d.name.toLowerCase()));
+
     return res.status(200).json({
       success: true,
-      data: units
+      data: [...defaults, ...units]
     });
   } catch (error) {
     console.error('Error fetching units:', error);
@@ -1542,7 +1557,11 @@ export const importFuelReportsFromCsv = async (req, res) => {
         const fuelAmountValue = mapping.fuelAmount ? parseFloat(rowData[mapping.fuelAmount]?.replace(/[^0-9.-]/g, '')) : null;
         const transactionNumberValue = mapping.transactionNumber ? rowData[mapping.transactionNumber] : null;
         const fuelVendorValue = mapping.fuelVendor ? rowData[mapping.fuelVendor] : null;
-        const unitValue = mapping.unit ? rowData[mapping.unit] : defaultUnit;
+        // A blank unit cell falls back to the Default Unit
+        const rowUnitValue = mapping.unit ? String(rowData[mapping.unit] ?? '').trim() : '';
+        const unitValue = rowUnitValue || defaultUnit;
+        const rowCurrency = mapping.currency ? normalizeCurrency(rowData[mapping.currency]) : null;
+        const rowVolumeUnit = mapping.measurementUnit ? normalizeVolumeUnit(rowData[mapping.measurementUnit]) : null;
         const cityValue = mapping.city ? rowData[mapping.city] : null;
         const stateValue = mapping.state ? rowData[mapping.state] : null;
         const addressValue = mapping.address ? rowData[mapping.address] : null;
@@ -1589,29 +1608,13 @@ export const importFuelReportsFromCsv = async (req, res) => {
           continue;
         }
 
-        const realVehicleId = extractRealId(unitValue);
-        let vehicleDoc = null;
-        
-        if (realVehicleId && isValidObjectId(realVehicleId)) {
-          vehicleDoc = await FleetUnit.findOne({
-            _id: new mongoose.Types.ObjectId(realVehicleId),
-            ...(companyId ? { company: companyId } : {})
-          });
-        }
-        
-        if (!vehicleDoc && realVehicleId) {
-          vehicleDoc = await FleetUnit.findOne({
-            $or: [
-              { internalId: realVehicleId },
-              { unitNo: realVehicleId }
-            ],
-            ...(companyId ? { company: companyId } : {})
-          });
-        }
+        // Trucks and trailers can be in FleetUnit, Vehicle or Trailer.
+        // Match by ID, unit number, internal ID or plate.
+        const vehicleDoc = await findFuelUnit(unitValue, companyId);
 
         if (!vehicleDoc) {
           results.failed++;
-          results.errors.push(`Row ${i + 1}: Unit not found: ${unitValue}`);
+          results.errors.push(`Row ${i + 1}: Unit not found: ${unitValue}. Use the unit number (e.g. TRK-101) or plate number from Fleet Profile.`);
           continue;
         }
 
@@ -1644,7 +1647,8 @@ export const importFuelReportsFromCsv = async (req, res) => {
           product: productValue || null,
           type: productValue || null,
           currentOdometer: odometerValue || null,
-          currency: defaultCurrency || 'USA',
+          currency: rowCurrency || normalizeCurrency(defaultCurrency) || 'USA',
+          ...(rowVolumeUnit ? { measurementUnit: rowVolumeUnit, units: [rowVolumeUnit] } : {}),
           state: stateValue || null,
           city: cityValue || null,
           location: addressValue ? {
@@ -1920,10 +1924,18 @@ export const parseFuelCardPdf = async (req, res) => {
 
     // Load drivers and vehicles for auto-matching
     const matchFilter = companyId ? { company: companyId } : {};
-    const [drivers, fleetUnits] = await Promise.all([
+    const [drivers, fleetUnitDocs, vehicleDocs, trailerDocs] = await Promise.all([
       User.find({ ...matchFilter, role: 'driver' }).select('name internalId').lean(),
-      FleetUnit.find(matchFilter).select('unitNo internalId makeModel unitType').lean(),
+      FleetUnit.find(matchFilter).select('unitNo internalId licensePlate makeModel unitType').lean(),
+      Vehicle.find(matchFilter).select('unitNumber internalId plateNumber').lean(),
+      Trailer.find(matchFilter).select('unitNumber internalId plateNumber').lean(),
     ]);
+    // Trucks and trailers can live in any of these collections
+    const fleetUnits = [
+      ...fleetUnitDocs.map(u => ({ _id: u._id, unitNo: u.unitNo, internalId: u.internalId, plate: u.licensePlate })),
+      ...vehicleDocs.map(v => ({ _id: v._id, unitNo: v.unitNumber || v.internalId, internalId: v.internalId, plate: v.plateNumber })),
+      ...trailerDocs.map(t => ({ _id: t._id, unitNo: t.unitNumber || t.internalId, internalId: t.internalId, plate: t.plateNumber })),
+    ];
 
     const matchDriver = (driverIdRaw) => {
       if (!driverIdRaw) return null;
@@ -1939,7 +1951,8 @@ export const parseFuelCardPdf = async (req, res) => {
       const needle = vehicleRaw.toString().trim().toLowerCase();
       return fleetUnits.find(u =>
         (u.unitNo && u.unitNo.toLowerCase() === needle) ||
-        (u.internalId && u.internalId.toLowerCase() === needle)
+        (u.internalId && u.internalId.toLowerCase() === needle) ||
+        (u.plate && u.plate.toLowerCase() === needle)
       ) || null;
     };
 
