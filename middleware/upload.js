@@ -146,6 +146,13 @@ export const FileUpload = multer({
   fileFilter: checkMimeType,
 });
 
+// Training videos need more room than everyday documents
+export const TrainingUpload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max
+  fileFilter: checkMimeType,
+});
+
 // ✅ Error wrapper middleware to catch S3 upload errors
 export const catchUploadErrors = (err, req, res, next) => {
   if (err) {
