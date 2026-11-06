@@ -11,6 +11,9 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { parseImportFile, mapRow } from "../utils/importParser.js";
 
+// Default passwords older frontends filled in for a blank PIN. Never accept them.
+const LEGACY_DEFAULT_PASSWORDS = ['TempPassword123!'];
+
 
 // Change Password
 export const changeDriverPassword = async (req, res) => {
@@ -1420,8 +1423,22 @@ export const createDriver = async (req, res) => {
       return res.json({ success: false, message: "Internal ID already exists" });
     }
 
+    // Never save a shared default password. A blank PIN (or the old frontend's
+    // hard-coded default) gets a random secret nobody knows, so the driver can't
+    // sign in until HR sets a real PIN.
+    const mobileAppOn = mobileApp === 'true' || mobileApp === true || mobileApp === 'Yes' || mobileApp === 'yes';
+    let rawPassword = typeof password === 'string' ? password.trim() : '';
+    if (LEGACY_DEFAULT_PASSWORDS.includes(rawPassword)) rawPassword = '';
+    if (mobileAppOn && !rawPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "PIN is required when Mobile App is on"
+      });
+    }
+    if (!rawPassword) rawPassword = crypto.randomBytes(32).toString('hex');
+
     // Hash password before saving
-    const hashedPassword = await hashPassword(password);
+    const hashedPassword = await hashPassword(rawPassword);
 
     // ✅ Handle profile image upload
     // Support both single file (req.file) and fields (req.files.file)
@@ -3028,13 +3045,26 @@ export const updateDriver = async (req, res) => {
     if (dob !== undefined) {
       driver.dob = dob ? new Date(dob) : null;
     }
+    const newPin = typeof password === 'string' ? password.trim() : '';
+    if (LEGACY_DEFAULT_PASSWORDS.includes(newPin)) {
+      return res.status(400).json({ success: false, message: "Please choose a different PIN" });
+    }
     if (mobileApp !== undefined) {
-      driver.mobileApp = mobileApp === 'true' || mobileApp === true || mobileApp === 'Yes' || mobileApp === 'yes';
+      const turningOn = mobileApp === 'true' || mobileApp === true || mobileApp === 'Yes' || mobileApp === 'yes';
+      // Turning the app on must come with a fresh PIN, so an old default
+      // password can never become a working login.
+      if (turningOn && !driver.mobileApp && !newPin) {
+        return res.status(400).json({
+          success: false,
+          message: "Set a new PIN when turning on Mobile App"
+        });
+      }
+      driver.mobileApp = turningOn;
     }
 
     // Hash password if provided
-    if (password) {
-      driver.password = await hashPassword(password);
+    if (newPin) {
+      driver.password = await hashPassword(newPin);
     }
 
     // ✅ Handle profile image upload

@@ -1,4 +1,5 @@
 import express from 'express';
+import { scopeTrainingRole } from '../middleware/trainingRoleScope.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/authRoles.js';
 import { FileUpload, FileUploadMemory, TrainingUpload, logFileUpload } from '../middleware/upload.js';
@@ -1534,7 +1535,8 @@ hrRoute.post(
 hrRoute.get(
   '/driver/question-bank',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
+  scopeTrainingRole,
   getQuestionBanks
 );
 
@@ -1542,7 +1544,8 @@ hrRoute.get(
 hrRoute.get(
   '/driver/question-bank/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
+  scopeTrainingRole,
   getQuestionBankById
 );
 
@@ -1576,7 +1579,8 @@ hrRoute.post(
 hrRoute.get(
   '/driver/training-content',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
+  scopeTrainingRole,
   getTrainingContent
 );
 
@@ -1584,7 +1588,8 @@ hrRoute.get(
 hrRoute.get(
   '/driver/training-content/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
+  scopeTrainingRole,
   getTrainingContentById
 );
 
@@ -1609,7 +1614,8 @@ hrRoute.delete(
 hrRoute.get(
   '/driver/training-content/:id/signed-url',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
+  scopeTrainingRole,
   getTrainingContentSignedUrl
 );
 
@@ -1675,7 +1681,7 @@ hrRoute.post(
 hrRoute.get(
   '/driver/test-type',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'driver'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'driver', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer', 'accountant'),
   getTestTypes
 );
 

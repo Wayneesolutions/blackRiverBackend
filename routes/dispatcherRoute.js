@@ -8,7 +8,7 @@ import {
   updateVehicle,
   importVehicles
 } from '../controllers/vehicleController.js'
-import { FileUpload, FileUploadMemory } from '../middleware/upload.js'
+import { FileUpload, FileUploadMemory, CsvUploadMemory } from '../middleware/upload.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { authorizeRoles } from '../middleware/authRoles.js'
 import { checkTrialAccess } from '../middleware/checkTrial.js'
@@ -317,7 +317,7 @@ dispatcherRoute.post(
   '/fuel-report/parse-csv',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
-  FileUploadMemory.single('csv'),
+  CsvUploadMemory.single('csv'),
   parseCsvHeaders
 )
 
@@ -325,7 +325,7 @@ dispatcherRoute.post(
   '/fuel-report/import-csv',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
-  FileUploadMemory.single('csv'),
+  CsvUploadMemory.single('csv'),
   importFuelReportsFromCsv
 )
 

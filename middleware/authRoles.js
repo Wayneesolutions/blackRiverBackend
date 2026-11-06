@@ -1,5 +1,5 @@
 // Maps each role to its portal key — used to check advanced portal permissions
-const ROLE_PORTAL_MAP = {
+export const ROLE_PORTAL_MAP = {
   dispatcher: 'dispatch_load',
   hr: 'human_resource',
   accountant: 'accounts',
