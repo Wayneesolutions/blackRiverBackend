@@ -140,7 +140,11 @@ export const getTrainingContent = async (req, res) => {
       query.type = type.toUpperCase();
     }
 
-    if (role && role !== 'all') {
+    if (req.trainingRoleScope) {
+      // Office roles only see content assigned to their own role(s)
+      const scope = req.trainingRoleScope;
+      query.assignedRoles = { $in: scope.role ? [scope.role] : scope.roles };
+    } else if (role && role !== 'all') {
       query.assignedRoles = { $in: [role] };
     }
 
@@ -172,6 +176,9 @@ export const getTrainingContentById = async (req, res) => {
     const query = { _id: id };
     if (!isSuperadmin && companyId) {
       query.company = companyId;
+    }
+    if (req.trainingRoleScope) {
+      query.assignedRoles = { $in: req.trainingRoleScope.roles };
     }
 
     const trainingContent = await TrainingContent.findOne(query)
@@ -318,6 +325,9 @@ export const getTrainingContentSignedUrl = async (req, res) => {
     const query = { _id: id };
     if (!isSuperadmin && companyId) {
       query.company = companyId;
+    }
+    if (req.trainingRoleScope) {
+      query.assignedRoles = { $in: req.trainingRoleScope.roles };
     }
 
     console.log('🔍 Query:', JSON.stringify(query));

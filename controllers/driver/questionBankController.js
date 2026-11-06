@@ -159,7 +159,11 @@ export const getQuestionBanks = async (req, res) => {
       query.testType = testType.toUpperCase();
     }
 
-    if (role && role !== 'all') {
+    if (req.trainingRoleScope) {
+      // Office roles only see content assigned to their own role(s)
+      const scope = req.trainingRoleScope;
+      query.assignedRoles = { $in: scope.role ? [scope.role] : scope.roles };
+    } else if (role && role !== 'all') {
       query.assignedRoles = { $in: [role] };
     }
 
@@ -211,6 +215,9 @@ export const getQuestionBankById = async (req, res) => {
     const query = { _id: id };
     if (!isSuperadmin && companyId) {
       query.company = companyId;
+    }
+    if (req.trainingRoleScope) {
+      query.assignedRoles = { $in: req.trainingRoleScope.roles };
     }
 
     const questionBank = await QuestionBank.findOne(query)

@@ -193,6 +193,33 @@ export const FileUploadMemory = multer({
   fileFilter: checkMimeType,
 });
 
+// ✅ CSV-only memory upload for fuel imports.
+// Browsers send CSV with different MIME types (Windows often uses
+// application/vnd.ms-excel), so check the extension as well.
+const csvMimeTypes = [
+  "text/csv",
+  "application/csv",
+  "text/x-csv",
+  "application/x-csv",
+  "text/comma-separated-values",
+  "application/vnd.ms-excel",
+  "text/plain",
+  "application/octet-stream",
+];
+const checkCsvFile = (req, file, cb) => {
+  const isCsvName = /\.csv$/i.test(file.originalname || "");
+  if (isCsvName && csvMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error("Invalid file type. Please upload a .csv or .xlsx file"), false);
+  }
+};
+export const CsvUploadMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB max
+  fileFilter: checkCsvFile,
+});
+
 // ✅ Verify file exists in S3
 const verifyS3Upload = async (key, bucket) => {
   try {
