@@ -227,13 +227,13 @@ dispatcherRoute.get(
 dispatcherRoute.post(
   '/fuel-report',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   createFuelReport
 )
 dispatcherRoute.get(
   '/fuel-report/',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   getFuelReports
 )
 dispatcherRoute.get(
@@ -246,7 +246,7 @@ dispatcherRoute.get(
 dispatcherRoute.get(
   '/fuel-types',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   getFuelTypes
 )
 
@@ -260,7 +260,7 @@ dispatcherRoute.post(
 dispatcherRoute.get(
   '/units',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   getUnits
 )
 
@@ -274,7 +274,7 @@ dispatcherRoute.post(
 dispatcherRoute.get(
   '/fuel-vendors',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   getFuelVendors
 )
 
@@ -308,7 +308,7 @@ dispatcherRoute.patch(
 dispatcherRoute.post(
   '/fuel-report/extract-receipt',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   FileUploadMemory.single('receipt'),
   extractFuelReceipt
 )
@@ -316,7 +316,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/parse-csv',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   FileUploadMemory.single('csv'),
   parseCsvHeaders
 )
@@ -324,7 +324,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/import-csv',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   FileUploadMemory.single('csv'),
   importFuelReportsFromCsv
 )
@@ -332,7 +332,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/parse-fuel-card',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   FileUploadMemory.single('pdf'),
   parseFuelCardPdf
 )
@@ -340,7 +340,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/confirm-fuel-card',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
   confirmFuelCardImport
 )
 
