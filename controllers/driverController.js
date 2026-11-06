@@ -14,6 +14,15 @@ import { parseImportFile, mapRow } from "../utils/importParser.js";
 // Default passwords older frontends filled in for a blank PIN. Never accept them.
 const LEGACY_DEFAULT_PASSWORDS = ['TempPassword123!'];
 
+// Never send password hashes or reset tokens back to the browser (or the logs)
+const SECRET_FIELDS = ['password', 'passwordResetToken', 'passwordResetExpires', 'resetPasswordToken', 'resetPasswordExpires'];
+const stripSecrets = (obj) => {
+  if (!obj || typeof obj !== 'object') return obj;
+  const copy = { ...obj };
+  SECRET_FIELDS.forEach((f) => { delete copy[f]; });
+  return copy;
+};
+
 
 // Change Password
 export const changeDriverPassword = async (req, res) => {
@@ -1260,12 +1269,12 @@ export const getDriverById = async (req, res) => {
       });
     }
 
-    console.log('📤 Full Response Data Structure:', JSON.stringify(responseData, null, 2));
+    console.log('📤 Full Response Data Structure:', JSON.stringify(stripSecrets(responseData), null, 2));
 
     res.json({
       success: true,
       message: "Driver profile with documents",
-      data: responseData
+      data: stripSecrets(responseData)
     });
   } catch (err) {
     res
@@ -1278,7 +1287,7 @@ export const getDriverById = async (req, res) => {
 export const createDriver = async (req, res) => {
   try {
     // ✅ Console log all fields received in req.body
-    console.log('📥 CREATE DRIVER - Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('📥 CREATE DRIVER - Request Body:', JSON.stringify(stripSecrets(req.body), null, 2));
     console.log('📥 CREATE DRIVER - Request Body Keys:', Object.keys(req.body));
     console.log('📥 CREATE DRIVER - Request Files:', req.files ? Object.keys(req.files) : 'No files');
     if (req.files) {
@@ -2809,7 +2818,7 @@ export const createDriver = async (req, res) => {
 
     res
       .status(201)
-      .json({ success: true, message: "Driver profile with documents", data: responseData });
+      .json({ success: true, message: "Driver profile with documents", data: stripSecrets(responseData) });
   } catch (error) {
     console.error('Error creating driver:', error);
     const { handleError } = await import("../utils/errorHandler.js");
@@ -2821,7 +2830,7 @@ export const createDriver = async (req, res) => {
 export const updateDriver = async (req, res) => {
   try {
     // ✅ Console log all fields received in req.body
-    console.log('📥 UPDATE DRIVER - Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('📥 UPDATE DRIVER - Request Body:', JSON.stringify(stripSecrets(req.body), null, 2));
     console.log('📥 UPDATE DRIVER - Request Body Keys:', Object.keys(req.body));
     console.log('📥 UPDATE DRIVER - Unit field:', req.body.unit);
     console.log('📥 UPDATE DRIVER - PostalCode field:', req.body.postalCode);
@@ -4638,7 +4647,7 @@ export const updateDriver = async (req, res) => {
       state: responseData.state
     });
 
-    res.json({ success: true, message: "Driver profile with documents", data: responseData });
+    res.json({ success: true, message: "Driver profile with documents", data: stripSecrets(responseData) });
   } catch (error) {
     console.error('Error updating driver:', error);
     res.status(500).json({ success: false, message: error.message });
