@@ -121,6 +121,15 @@ const subscriptionInvoiceSchema = new mongoose.Schema(
       type: Date
     },
 
+    // Last time this invoice was emailed to the customer
+    emailedAt: {
+      type: Date
+    },
+
+    emailedTo: {
+      type: String
+    },
+
     // Extra
     notes: {
       type: String

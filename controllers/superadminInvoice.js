@@ -4,6 +4,7 @@ import { User } from "../models/driver/userModel.js";
 import { Plan } from "../models/planModel.js";
 import { Subscription } from "../models/subscriptionModel.js";
 import { billingCycleFor, generateInvoiceNumber } from "../utils/planAssignment.js";
+import { sendSubscriptionInvoiceEmail } from "../services/emailService.js";
 
 export const createSubscriptionInvoice = async ({
   adminId,
@@ -233,6 +234,51 @@ export const createManualInvoice = async (req, res) => {
   } catch (error) {
     console.error("Create manual invoice error:", error);
     res.status(500).json({ success: false, message: "Error creating invoice", error: error.message });
+  }
+};
+
+const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const MAX_PDF_BASE64_LENGTH = 15 * 1024 * 1024; // about 11 MB of PDF
+
+/**
+ * POST /superadmin/invoices/:id/email
+ * Emails the invoice to the customer with the PDF attached.
+ * Body: { to?, pdfBase64 }. `to` defaults to the customer's account email.
+ * The PDF is the one the Invoices page already generates, so the attachment
+ * matches what "Export Invoice" downloads.
+ */
+export const emailInvoice = async (req, res) => {
+  try {
+    const invoice = await SuperAdminInvoice.findById(req.params.id).populate(INVOICE_POPULATE);
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (invoice.invoiceStatus === "cancelled") {
+      return res.status(400).json({ success: false, message: "A cancelled invoice can't be emailed" });
+    }
+
+    const to = String(req.body?.to || invoice.admin?.email || "").trim();
+    if (!EMAIL_PATTERN.test(to)) {
+      return res.status(400).json({ success: false, message: "Enter a valid email address" });
+    }
+
+    const pdfBase64 = String(req.body?.pdfBase64 || "").replace(/^data:[^,]*,/, "");
+    if (!pdfBase64) return res.status(400).json({ success: false, message: "The invoice PDF is missing" });
+    if (pdfBase64.length > MAX_PDF_BASE64_LENGTH) {
+      return res.status(413).json({ success: false, message: "The invoice PDF is too large to email" });
+    }
+
+    const result = await sendSubscriptionInvoiceEmail({ to, invoice, pdfBase64 });
+    if (!result.success) {
+      return res.status(502).json({ success: false, message: result.message || "The email could not be sent" });
+    }
+
+    invoice.emailedAt = new Date();
+    invoice.emailedTo = to;
+    await invoice.save();
+
+    res.json({ success: true, message: `Invoice emailed to ${to}`, data: invoice });
+  } catch (error) {
+    console.error("Email invoice error:", error);
+    res.status(500).json({ success: false, message: "Error emailing invoice" });
   }
 };
 

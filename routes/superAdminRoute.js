@@ -20,7 +20,7 @@ import {
 import { getSuperAdminDashboard } from '../controllers/superAdminDashboardController.js'
 import { getSuperAdminRevenue, getSuperAdminInvoices } from '../controllers/superAdminRevenueController.js'
 import { getSuperAdminSettings, updateSuperAdminSettings } from '../controllers/superAdminSettingsController.js'
-import { createManualInvoice, updateInvoiceStatus } from '../controllers/superadminInvoice.js'
+import { createManualInvoice, updateInvoiceStatus, emailInvoice } from '../controllers/superadminInvoice.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { authorizeRoles } from '../middleware/authRoles.js'
 import { ContactInquiry } from '../models/contactInquiryModel.js'
@@ -155,6 +155,12 @@ superAdminRoute.patch(
   authMiddleware,
   authorizeRoles('superadmin'),
   updateInvoiceStatus
+)
+superAdminRoute.post(
+  '/invoices/:id/email',
+  authMiddleware,
+  authorizeRoles('superadmin'),
+  emailInvoice
 )
 
 // Website contact-form leads (logistiqinnovations.ca/contact)
