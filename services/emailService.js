@@ -2470,6 +2470,65 @@ export const sendContactInquiryEmail = async ({ name: rawName, email: rawEmail, 
   }
 };
 
+/**
+ * Email a Super Admin subscription invoice to the customer with its PDF attached.
+ * @param {String} options.to - Recipient email address
+ * @param {Object} options.invoice - SuperAdminInvoice with admin and company populated
+ * @param {String} options.pdfBase64 - The invoice PDF, base64 encoded
+ * @returns {Promise<Object>} { success, message }
+ */
+export const sendSubscriptionInvoiceEmail = async ({ to, invoice, pdfBase64 }) => {
+  try {
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      return { success: false, message: 'Email is not set up on the server. Please check the SMTP settings.' };
+    }
+
+    const money = new Intl.NumberFormat('en-CA', { style: 'currency', currency: invoice.currency || 'CAD' }).format(invoice.totalAmount || 0);
+    const number = escapeHtml(invoice.invoiceNumber);
+    const plan = escapeHtml(invoice.planName);
+    const name = escapeHtml(invoice.admin?.name || invoice.company?.companyName || 'Customer');
+    const isPaid = invoice.paymentStatus === 'paid';
+    const statusText = isPaid ? 'Paid' : 'Payment due';
+    const subject = `Invoice ${invoice.invoiceNumber} from Logistiq Innovations`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; color: #1f2937;">
+        <h2 style="color: #1183e0; margin-bottom: 16px;">Your invoice is attached</h2>
+        <p>Hello ${name},</p>
+        <p>Please find your Logistiq Innovations invoice attached as a PDF.</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+          <tr><td style="padding: 6px 0; color: #6b7280;">Invoice number</td><td style="padding: 6px 0; text-align: right;">${number}</td></tr>
+          <tr><td style="padding: 6px 0; color: #6b7280;">Plan</td><td style="padding: 6px 0; text-align: right;">${plan}</td></tr>
+          <tr><td style="padding: 6px 0; color: #6b7280;">Total</td><td style="padding: 6px 0; text-align: right; font-weight: bold;">${money}</td></tr>
+          <tr><td style="padding: 6px 0; color: #6b7280;">Status</td><td style="padding: 6px 0; text-align: right;">${statusText}</td></tr>
+        </table>
+        <p>If you have any questions about this invoice, please reply to this email.</p>
+        <p style="margin-top: 24px;">Thank you for your business.<br/>Logistiq Innovations</p>
+      </div>`;
+
+    const text = `Hello ${invoice.admin?.name || 'Customer'},\n\nPlease find your Logistiq Innovations invoice attached as a PDF.\n\nInvoice number: ${invoice.invoiceNumber}\nPlan: ${invoice.planName}\nTotal: ${money}\nStatus: ${statusText}\n\nThank you for your business.\nLogistiq Innovations`;
+
+    await createTransporter().sendMail({
+      from: `"Logistiq Innovations" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
+      to,
+      subject,
+      text,
+      html,
+      attachments: [{
+        filename: `Invoice_${invoice.invoiceNumber}.pdf`,
+        content: pdfBase64,
+        encoding: 'base64',
+        contentType: 'application/pdf',
+      }],
+    });
+
+    return { success: true, message: 'Invoice email sent' };
+  } catch (error) {
+    console.error('Subscription invoice email failed:', error.message);
+    return { success: false, message: 'The email could not be sent. Please check the address and the SMTP settings.' };
+  }
+};
+
 export const sendEmployeeInviteEmail = async ({ employeeEmail, employeeName, inviteUrl, companyName }) => {
   try {
     if (!employeeEmail) return { success: false, message: 'No email provided' };
