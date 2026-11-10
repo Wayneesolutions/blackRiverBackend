@@ -262,9 +262,28 @@ export const updateIncident = async (req, res) => {
       updateData.date = new Date(req.body.date);
     }
 
-    // Handle status updates
+    // Handle status updates (closing stamps who/when; reopening clears it)
     if (req.body.status) {
+      const allowedStatuses = ['open', 'investigating', 'action-required', 'resolved', 'closed'];
+      if (!allowedStatuses.includes(req.body.status)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid status. Use one of: ${allowedStatuses.join(', ')}`
+        });
+      }
       updateData.status = req.body.status;
+      if (req.body.status === 'closed' && incident.status !== 'closed') {
+        updateData.closedAt = new Date();
+        updateData.closedBy = req.user?._id || null;
+        updateData.closedByName = req.user?.name || null;
+      } else if (req.body.status !== 'closed' && incident.status === 'closed') {
+        updateData.closedAt = null;
+        updateData.closedBy = null;
+        updateData.closedByName = null;
+      }
+    }
+    if (req.body.closureNotes !== undefined) {
+      updateData.closureNotes = req.body.closureNotes || null;
     }
 
     // Handle description updates

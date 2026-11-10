@@ -1738,6 +1738,58 @@ const convertPdfBufferToImage = async (pdfBuffer) => {
 };
 
 /**
+ * Pulls the text layer out of a PDF, page by page, rebuilding table rows from the
+ * position of each text item. Carrier profiles from provincial portals are
+ * text-based PDFs, so this gives the model exact report numbers and dates instead
+ * of having to read them off a rendered image. Returns '' for scanned PDFs.
+ */
+const extractPdfTableText = async (pdfBuffer, maxChars = 60000) => {
+  try {
+    if (typeof Promise.withResolvers !== 'function') {
+      Promise.withResolvers = function () {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+      };
+    }
+    const pdfjsModule = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdfjsLib = pdfjsModule.default || pdfjsModule;
+    const doc = await pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      useSystemFonts: true,
+      disableFontFace: true,
+      isEvalSupported: false
+    }).promise;
+
+    const pages = [];
+    let length = 0;
+    for (let pageNo = 1; pageNo <= doc.numPages && length < maxChars; pageNo++) {
+      const page = await doc.getPage(pageNo);
+      const content = await page.getTextContent();
+      // Group items into lines by their y position, then order each line by x
+      const lines = new Map();
+      for (const item of content.items) {
+        if (!item.str || !item.str.trim()) continue;
+        const y = Math.round(item.transform[5] / 2) * 2;
+        if (!lines.has(y)) lines.set(y, []);
+        lines.get(y).push({ x: item.transform[4], text: item.str.trim() });
+      }
+      const text = [...lines.entries()]
+        .sort((a, b) => b[0] - a[0])
+        .map(([, items]) => items.sort((a, b) => a.x - b.x).map((i) => i.text).join(' | '))
+        .join('\n');
+      pages.push(`--- Page ${pageNo} ---\n${text}`);
+      length += text.length;
+    }
+    await doc.destroy();
+    return pages.join('\n\n').slice(0, maxChars);
+  } catch (error) {
+    console.warn('⚠️ Could not read PDF text layer, falling back to images only:', error.message);
+    return '';
+  }
+};
+
+/**
  * Extract carrier profile inspection data from document using OpenAI Vision API
  * @param {Buffer} fileBuffer - File buffer (image or PDF converted to image)
  * @param {string} mimeType - MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
@@ -1762,8 +1814,11 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
     // Convert PDF to images if needed (all pages for carrier profiles)
     let imageBuffers = [fileBuffer]; // For images, use single buffer
     let finalMimeType = mimeType;
+    let pdfText = '';
     
     if (isPDF) {
+      pdfText = await extractPdfTableText(fileBuffer);
+      console.log(`📄 PDF text layer: ${pdfText.length} characters`);
       try {
         console.log('📄 Converting PDF to images for AI processing (all pages)...');
         imageBuffers = await convertPdfBufferToImages(fileBuffer); // Convert all pages
@@ -1773,7 +1828,12 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
         console.error('❌ PDF conversion failed:', conversionError);
         // Provide helpful error message
         const errorMsg = conversionError.message || 'Unknown error';
-        if (errorMsg.includes('Image or Canvas expected')) {
+        // A text-based PDF can still be read without the page images
+        if (pdfText.length > 200) {
+          console.log('↪️ Continuing with the PDF text layer only');
+          imageBuffers = [];
+        }
+        if (imageBuffers.length > 0 && errorMsg.includes('Image or Canvas expected')) {
           return {
             success: false,
             error: 'PDF conversion failed due to compatibility issues with this PDF file. Please convert the PDF to an image (PNG or JPEG) and upload the image file instead. You can use online tools or screenshot the PDF pages.',
@@ -1782,7 +1842,7 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
         }
         
         // Check if it's an ImageMagick installation issue
-        if (errorMsg.includes('ImageMagick') || errorMsg.includes('GraphicsMagick') || errorMsg.includes('convert') || errorMsg.includes('spawn') || errorMsg.includes('Failed to convert')) {
+        if (imageBuffers.length > 0 && (errorMsg.includes('ImageMagick') || errorMsg.includes('GraphicsMagick') || errorMsg.includes('convert') || errorMsg.includes('spawn') || errorMsg.includes('Failed to convert'))) {
           return {
             success: false,
             error: `PDF conversion requires ImageMagick or GraphicsMagick to be installed on the server. 
@@ -1796,11 +1856,13 @@ The system administrator needs to install ImageMagick for PDF conversion to work
           };
         }
         
-        return {
-          success: false,
-          error: `Failed to convert PDF to image: ${errorMsg}. Please try uploading an image file (PNG or JPEG) instead, or convert the PDF to an image first using a PDF viewer or online conversion tool.`,
-          data: null
-        };
+        if (imageBuffers.length > 0) {
+          return {
+            success: false,
+            error: `Failed to convert PDF to image: ${errorMsg}. Please try uploading an image file (PNG or JPEG) instead, or convert the PDF to an image first using a PDF viewer or online conversion tool.`,
+            data: null
+          };
+        }
       }
     }
 
@@ -1809,33 +1871,33 @@ The system administrator needs to install ImageMagick for PDF conversion to work
 
     const systemPrompt = `You are an expert compliance analyst specializing in CVSA (Commercial Vehicle Safety Alliance) inspections and carrier profile documents. Your task is to analyze government-issued carrier safety profile documents and extract structured inspection data. These are official compliance documents that contain inspection records, statistics, and safety ratings for commercial vehicle carriers. Extract all inspection data from these documents, including inspection counts, pass/fail statistics, out-of-service records, and other compliance metrics. Return data in a structured JSON format. This is a legitimate business compliance task.`;
 
-    const userPrompt = `Analyze this carrier profile document${imageBuffers.length > 1 ? ` (${imageBuffers.length} pages)` : ''} and extract all CVSA inspection data. Return a JSON object with the following structure (use null for missing fields):
+    const userPrompt = `Analyze this carrier profile document${imageBuffers.length > 1 ? ` (${imageBuffers.length} pages)` : ''} and extract the carrier details and EVERY CVSA inspection listed in it. Return a JSON object with exactly this structure (use null for anything not printed in the document — never guess or invent values):
 
 {
+  "carrier": {
+    "name": string | null,
+    "nscNumber": string | null,
+    "usdotNumber": string | null,
+    "safetyRating": string | null (exactly as printed, e.g. "Satisfactory", "Conditional", "Unsatisfactory", "Satisfactory Unaudited")
+  },
+  "period": {
+    "start": string | null (YYYY-MM-DD, start of the period the profile covers),
+    "end": string | null (YYYY-MM-DD, end of the period / profile date)
+  },
   "inspections": [
     {
-      "inspectionId": string | null,
-      "date": string | null (format: YYYY-MM-DD),
-      "month": string | null (e.g., "January", "February"),
-      "year": number | null,
-      "country": "canada" | "usa" | null,
-      "province": string | null (e.g., "MB", "BC", "ON", "AB", "SK" for Canada - extract from "Prov. State" column),
-      "state": string | null (e.g., "CA", "TX", "NY" for USA - extract from "Prov. State" column),
-      "location": string | null,
-      "status": "pass" | "fail" | "warning" | "out-of-service" | null (map "Result" column: Pass=pass, Fail=fail, OOS=out-of-service),
-      "inspectionType": "level-1" | "level-2" | "level-3" | "level-4" | "level-5" | "level-6" | null (map "Level" column: 1=level-1, 2=level-2, etc.),
-      "reportNumber": string | null (extract from "Report #" column),
-      "inspectorName": string | null,
-      "vehicleUnitNo": string | null (extract from "Power Unit Plate" column),
-      "driverName": string | null (extract from "Driver Name" column),
+      "reportNumber": string | null (the "Report #" / "Inspection #" column, copied character for character),
+      "date": string | null (the "Inspection Date" column converted to YYYY-MM-DD),
+      "province": string | null (2-letter Canadian province code from the "Prov./State" or "Jurisdiction" column, e.g. "MB", "ON", "SK"),
+      "state": string | null (2-letter US state code from the same column, e.g. "ND", "MN"),
+      "location": string | null (the "Inspection Location" / "Site" column),
+      "level": number | null (the CVSA level 1-6),
+      "result": string | null (the "Result" column exactly as printed, e.g. "Pass", "Fail", "OOS", "Req. Attn."),
+      "vehicleUnitNo": string | null (the power unit plate or unit number),
+      "driverName": string | null,
       "driverLicenseNumber": string | null,
-      "violations": [
-        {
-          "code": string | null,
-          "description": string | null,
-          "severity": "minor" | "major" | "critical" | null
-        }
-      ],
+      "inspectorName": string | null,
+      "violations": [ { "code": string | null, "description": string | null, "severity": "minor" | "major" | "critical" | null } ],
       "notes": string | null
     }
   ],
@@ -1845,47 +1907,23 @@ The system administrator needs to install ImageMagick for PDF conversion to work
     "totalFail": number | null,
     "totalWarning": number | null,
     "totalOutOfService": number | null,
-    "canadaInspections": number | null,
-    "usaInspections": number | null,
-    "period": string | null (e.g., "January 2024", "Q1 2024", "2024")
+    "period": string | null (the reporting period exactly as printed)
   }
 }
 
-Guidelines:
-- CRITICAL PRIORITY: The document likely contains an inspection table with columns like "Report #", "Level", "Prov. State", "Inspection Location", "Inspection Date", "Power Unit Plate", "Driver Name", "Result"
-- YOU MUST extract EVERY ROW from this table as an individual inspection record
-- DO NOT leave the inspections array empty if you see a table of inspections - extract ALL rows
-- Each row in the inspection table should become one object in the inspections array
-- Look for sections titled "Carrier Inspections" or similar - these contain the inspection table
-- The table may span multiple pages - extract ALL inspections from ALL pages
-- Example: If you see a table with 33 rows, the inspections array should have 33 objects
-- Extract summary statistics (total pass, fail, warning, OOS counts) from summary sections
-- CRITICAL: Always identify and extract country information (Canada or USA) for each inspection and in summary
-- Identify country (Canada or USA) based on:
-  * Province/State codes in "Prov. State" column: MB, BC, ON, AB, SK, QC, NS, NB, NL, PE, YT, NT, NU = Canada; AL, AK, AZ, AR, CA, CO, CT, DE, FL, GA, etc. = USA
-  * Inspection report numbers (e.g., MBE25-xxx = Manitoba/Canada, ONEA-xxx = Ontario/Canada, AB29xxx = Alberta/Canada)
-  * Location names (Canadian provinces/cities vs US states/cities)
-  * Explicit country labels in the document
-  * Jurisdiction codes (CBSA for Canada, DOT/CVS for USA)
-  * Document headers or section labels
-- IMPORTANT: Always extract canadaInspections and usaInspections counts:
-  * Count individual inspections by province/state codes (MB, BC, ON, AB, SK, etc. = Canada; US state codes = USA)
-  * Look for explicit country breakdowns in summary sections
-  * If you extract individual inspections, count them: canadaInspections = count of inspections with Canadian province codes, usaInspections = count of inspections with US state codes
-  * If only summary totals are shown without breakdown, count from individual inspection records you extracted
-- For individual inspections from tables:
-  * Extract "Report #" as reportNumber
-  * Extract "Level" as inspectionType (1=level-1, 2=level-2, 3=level-3, 4=level-4, 5=level-5, 6=level-6)
-  * Extract "Prov. State" as province (if Canadian) or state (if US)
-  * Extract "Inspection Location" as location
-  * Extract "Inspection Date" as date (convert to YYYY-MM-DD format)
-  * Extract "Result" as status (Pass=pass, Fail=fail, OOS=out-of-service)
-  * Extract "Power Unit Plate" as vehicleUnitNo
-  * Extract "Driver Name" as driverName
-- Extract dates in YYYY-MM-DD format (convert from formats like "30/Dec/2025" or "30-Dec-2025")
-- Extract month names as full month names (January, February, etc.)
-- Be precise with numbers and dates
-- If the document shows monthly data, extract each month's statistics separately`;
+Rules:
+- One object in "inspections" per row of the inspection table(s). The table may continue over several pages — include the rows from every page, but never the same row twice.
+- Copy report numbers, plates and dates exactly. Do not reuse a value from one row in another row.
+- Province/state goes in "province" (Canada) or "state" (USA) — do not guess the country from anything else.
+- Dates on Canadian profiles are usually printed day first (e.g. 30/Dec/2025 or 30/12/2025). Convert to YYYY-MM-DD.
+- "summary" holds only the totals printed in the document's summary section; leave a field null if the document does not print it. Do not compute totals yourself.
+- Skip header rows, blank rows and section titles.
+${pdfText ? `
+The exact text layer of the PDF is included below (cells separated by " | "). Use it as the primary source for every value; use the page images only to understand the layout.
+
+<pdf_text>
+${pdfText}
+</pdf_text>` : ''}`;
 
     const response = await withRateLimitRetry(() => axios.post(
       OPENAI_API_URL,
@@ -1913,7 +1951,7 @@ Guidelines:
             ]
           }
         ],
-        max_tokens: 8000, // Increased for multi-page documents
+        max_tokens: 16000, // Large profiles can list 100+ inspections
         temperature: 0.1, // Lower temperature for more consistent extraction
         response_format: { type: 'json_object' }
       },
@@ -1976,7 +2014,7 @@ Guidelines:
                   ]
                 }
               ],
-              max_tokens: 8000,
+              max_tokens: 16000,
               temperature: 0.1
               // Removed response_format to see if it helps
             },

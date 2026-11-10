@@ -4,6 +4,7 @@ import { FleetUnit } from '../../models/fleet/fleetUnitModel.js';
 import { User } from '../../models/driver/userModel.js';
 import { getUserCompanyId } from '../../utils/companyFilter.js';
 import mongoose from 'mongoose';
+import { generateDocumentSignedUrl } from './compilanceController.js';
 
 // Helper to extract real ID from prefixed IDs
 const extractRealId = (prefixedId) => {
@@ -44,6 +45,23 @@ const findVehicleById = async (vehicleId, companyId) => {
   return null;
 };
 
+// Adds `documentLinks` (name + viewable URL) next to the stored document keys
+const attachDocumentLinks = async (claim) => {
+  if (!claim || !Array.isArray(claim.documents) || claim.documents.length === 0) {
+    if (claim) claim.documentLinks = [];
+    return claim;
+  }
+  claim.documentLinks = await Promise.all(
+    claim.documents.map(async (key) => {
+      const rawName = String(key).split('/').pop() || 'document';
+      // Uploaded files are stored as "<timestamp>-<original name>"
+      const name = rawName.replace(/^\d{10,}-/, '');
+      return { key, name, url: (await generateDocumentSignedUrl(key)) || key };
+    })
+  );
+  return claim;
+};
+
 // Create insurance claim
 export const createInsuranceClaim = async (req, res) => {
   try {
@@ -75,11 +93,21 @@ export const createInsuranceClaim = async (req, res) => {
       notes
     } = req.body;
 
-    // Validate required fields
-    if (!incidentDate || !claimDate || !claimType || !amount || !driver || !vehicle || !insuranceCompany || !policyNumber || !description) {
+    // Validate required fields (amount may legitimately be 0 while the claim is being assessed)
+    const missing = [];
+    if (!incidentDate) missing.push('incident date');
+    if (!claimDate) missing.push('claim date');
+    if (!claimType) missing.push('claim type');
+    if (amount === undefined || amount === null || amount === '' || Number.isNaN(parseFloat(amount))) missing.push('amount');
+    if (!driver) missing.push('driver');
+    if (!vehicle) missing.push('vehicle');
+    if (!insuranceCompany) missing.push('insurance company');
+    if (!policyNumber) missing.push('policy number');
+    if (!description) missing.push('description');
+    if (missing.length > 0) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields'
+        message: `Missing required fields: ${missing.join(', ')}`
       });
     }
 
@@ -132,6 +160,7 @@ export const createInsuranceClaim = async (req, res) => {
       deductible: parseFloat(deductible || 0),
       driver: new mongoose.Types.ObjectId(driver),
       vehicle: new mongoose.Types.ObjectId(extractRealId(vehicle)),
+      vehicleModel: vehicleResult.model,
       insuranceCompany,
       policyNumber,
       adjusterName: adjusterName || '',
@@ -188,9 +217,10 @@ export const getInsuranceClaims = async (req, res) => {
       });
     }
 
-    const { status, claimType, search, page = 1, limit = 10 } = req.query;
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    const { status, claimType, search, page = 1, limit = 500 } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    // The claims page filters client-side, so it needs the full list (was capped at 10)
+    const limitNum = Math.min(1000, Math.max(1, parseInt(limit) || 500));
     const skip = (pageNum - 1) * limitNum;
 
     // Build query
@@ -226,6 +256,8 @@ export const getInsuranceClaims = async (req, res) => {
       .skip(skip)
       .limit(limitNum)
       .lean();
+
+    await Promise.all(claims.map(attachDocumentLinks));
 
     res.json({
       success: true,
@@ -280,6 +312,8 @@ export const getInsuranceClaimById = async (req, res) => {
         message: 'Access denied'
       });
     }
+
+    await attachDocumentLinks(claim);
 
     res.json({
       success: true,
@@ -403,6 +437,17 @@ export const updateInsuranceClaim = async (req, res) => {
     if (description) claim.description = description;
     if (location !== undefined) claim.location = location;
     if (notes !== undefined) claim.notes = notes;
+
+    // Remove documents the user deleted (JSON list of stored keys)
+    if (req.body.removeDocuments) {
+      let toRemove = req.body.removeDocuments;
+      if (typeof toRemove === 'string') {
+        try { toRemove = JSON.parse(toRemove); } catch { toRemove = [toRemove]; }
+      }
+      if (Array.isArray(toRemove) && toRemove.length > 0) {
+        claim.documents = (claim.documents || []).filter((doc) => !toRemove.includes(doc));
+      }
+    }
 
     // Append newly uploaded document files
     if (req.files && req.files.length > 0) {
