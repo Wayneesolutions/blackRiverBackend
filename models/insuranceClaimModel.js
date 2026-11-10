@@ -106,13 +106,27 @@ const insuranceClaimSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate claim number if not provided
-insuranceClaimSchema.pre('save', async function(next) {
+// Generate claim number if not provided. This must run before validation —
+// claimNumber is required, and a pre('save') hook runs only after validation,
+// so a claim saved without a number used to fail with "claimNumber is required".
+insuranceClaimSchema.pre('validate', async function(next) {
   if (!this.claimNumber) {
-    const count = await mongoose.model('InsuranceClaim').countDocuments();
-    this.claimNumber = `CLM-${String(count + 1).padStart(6, '0')}`;
+    // Next number after the highest CLM-###### in use (a count breaks once claims are deleted)
+    const latest = await mongoose.model('InsuranceClaim')
+      .findOne({ claimNumber: /^CLM-\d+$/ })
+      .sort({ claimNumber: -1 })
+      .select('claimNumber')
+      .lean();
+    let nextNumber = latest ? parseInt(latest.claimNumber.replace('CLM-', ''), 10) + 1 : 1;
+    // Guard against a race with another request creating a claim at the same moment
+    // eslint-disable-next-line no-await-in-loop
+    while (await mongoose.model('InsuranceClaim').exists({ claimNumber: `CLM-${String(nextNumber).padStart(6, '0')}` })) nextNumber++;
+    this.claimNumber = `CLM-${String(nextNumber).padStart(6, '0')}`;
   }
-  
+  next();
+});
+
+insuranceClaimSchema.pre('save', async function(next) {
   // Calculate claim amount
   if (this.amount && this.deductible !== undefined) {
     this.claimAmount = Math.max(0, this.amount - this.deductible);

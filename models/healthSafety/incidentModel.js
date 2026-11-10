@@ -89,6 +89,11 @@ const incidentSchema = new mongoose.Schema({
     enum: ['open', 'investigating', 'action-required', 'resolved', 'closed'],
     default: 'open' 
   },
+  // Closure
+  closedAt: { type: Date, default: null },
+  closedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  closedByName: { type: String, default: null },
+  closureNotes: { type: String, default: null },
   reportedBy: { type: String, required: true },
   reportedByRole: { type: String, required: true },
   description: { type: String, required: true },

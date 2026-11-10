@@ -120,6 +120,18 @@ const cvsaInspectionSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    // Where the record came from: entered by hand, or imported from a carrier profile document
+    source: {
+      type: String,
+      enum: ['manual', 'carrier-profile'],
+      default: 'manual'
+    },
+    importBatch: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CarrierProfileImport",
+      default: null,
+      index: true
+    },
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "CompanySettings",

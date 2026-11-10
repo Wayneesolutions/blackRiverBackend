@@ -142,6 +142,8 @@ import {
   uploadCarrierProfileDocument,
   saveCarrierProfileData,
   getCarrierPerformance,
+  getCarrierProfileImports,
+  deleteCarrierProfileImport,
   getTickets,
   getTicketById,
   createTicket,
@@ -611,6 +613,20 @@ adminRoute.get(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
   getCarrierPerformance
+);
+
+adminRoute.get(
+  '/cvsa-inspections/carrier-profile-imports',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  getCarrierProfileImports
+);
+
+adminRoute.delete(
+  '/cvsa-inspections/carrier-profile-imports/:id',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  deleteCarrierProfileImport
 );
 
 adminRoute.get(

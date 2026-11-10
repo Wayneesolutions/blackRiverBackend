@@ -19,6 +19,15 @@ import { updateGeneralRepair, deleteGeneralRepair } from "../fleet/generalRepair
 import { updateVehicleService, deleteVehicleService } from "../vehicleService/vehicleServiceController.js";
 import { updateRegulatorySafetyRecord, deleteRegulatorySafetyRecord } from "../fleet/regulatorySafetyController.js";
 import { extractCarrierProfileData } from "../../services/openaiService.js";
+import { CarrierProfileImport } from "../../models/compliance/carrierProfileImportModel.js";
+import {
+  normalizeCarrierProfileExtraction,
+  normalizeStatus,
+  normalizeLevel,
+  normalizeSafetyRating,
+  parseDocumentDate,
+  resolveInspectionCountry
+} from "../../utils/carrierProfileUtils.js";
 import fs from "fs";
 
 // Helper function to convert service name to kebab-case (matching frontend logic)
@@ -924,7 +933,7 @@ export const getComplianceDashboardData = async (req, res) => {
 };
 
 // Helper function to generate signed URL for CVSA inspection documents
-const generateDocumentSignedUrl = async (documentUrl) => {
+export const generateDocumentSignedUrl = async (documentUrl) => {
   if (!documentUrl) {
     return null;
   }
@@ -1417,11 +1426,23 @@ export const updateCvsaInspection = async (req, res) => {
       });
       
       // Get existing inspection to merge documents
-      const existingInspection = await CvsaInspection.findById(id);
+      const existingInspection = await CvsaInspection.findOne(query);
       const existingDocuments = existingInspection?.documents || [];
       
       // Merge existing documents with new ones
       updateFields.documents = [...existingDocuments, ...newDocuments];
+    }
+
+    // Remove documents the user deleted (sent as a JSON list of documentUrl values)
+    if (updateData.removeDocuments) {
+      let toRemove = updateData.removeDocuments;
+      if (typeof toRemove === 'string') {
+        try { toRemove = JSON.parse(toRemove); } catch { toRemove = [toRemove]; }
+      }
+      if (Array.isArray(toRemove) && toRemove.length > 0) {
+        const base = updateFields.documents || (await CvsaInspection.findOne(query))?.documents || [];
+        updateFields.documents = base.filter((doc) => !toRemove.includes(doc.documentUrl));
+      }
     }
     
     // Basic fields
@@ -1805,6 +1826,9 @@ export const deleteOldCvsaData = async (req, res) => {
 };
 
 // ✅ CVSA Inspection - Upload Carrier Profile Document and Extract Data
+// Always works in two steps: this endpoint reads the document and returns the rows
+// for review; nothing is written until the reviewed rows are posted to
+// /save-carrier-profile. (`preview=false` is still accepted and saves straight away.)
 export const uploadCarrierProfileDocument = async (req, res) => {
   try {
     if (!req.file) {
@@ -1815,59 +1839,28 @@ export const uploadCarrierProfileDocument = async (req, res) => {
     }
 
     const companyId = getUserCompanyId(req.user);
-    const isSuperadmin = req.user?.role === 'superadmin';
-
-    if (!isSuperadmin && !companyId) {
+    if (!companyId) {
       return res.status(400).json({
         success: false,
         message: "Please complete company settings first."
       });
     }
 
-    // Check if this is a preview request (extract only, don't save)
-    const isPreview = req.query.preview === 'true' || req.body.preview === true;
+    const isPreview = !(req.query.preview === 'false' || req.body.preview === false || req.body.preview === 'false');
 
-    // Read the file buffer
     let fileBuffer;
-    try {
-      if (req.file.buffer) {
-        // File is in memory (multer memory storage)
-        fileBuffer = req.file.buffer;
-      } else if (req.file.path) {
-        // Fallback: File is on disk
-        if (!fs.existsSync(req.file.path)) {
-          console.error('File path does not exist:', req.file.path);
-          return res.status(400).json({
-            success: false,
-            message: "File not found on server"
-          });
-        }
-        fileBuffer = fs.readFileSync(req.file.path);
-      } else {
-        console.error('File object structure:', {
-          hasBuffer: !!req.file.buffer,
-          hasPath: !!req.file.path,
-          hasLocation: !!req.file.location,
-          fileKeys: Object.keys(req.file),
-          mimetype: req.file.mimetype,
-          originalname: req.file.originalname
-        });
-        return res.status(400).json({
-          success: false,
-          message: "Unable to read uploaded file. Expected buffer or path."
-        });
-      }
-    } catch (readError) {
-      console.error('Error reading file:', readError);
-      return res.status(500).json({
+    if (req.file.buffer) {
+      fileBuffer = req.file.buffer;
+    } else if (req.file.path && fs.existsSync(req.file.path)) {
+      fileBuffer = fs.readFileSync(req.file.path);
+    } else {
+      return res.status(400).json({
         success: false,
-        message: "Error reading file: " + readError.message
+        message: "Unable to read uploaded file. Please try again."
       });
     }
 
     console.log('🤖 Starting AI extraction for carrier profile document...');
-
-    // Extract carrier profile data using OpenAI
     const extractionResult = await extractCarrierProfileData(fileBuffer, req.file.mimetype);
 
     if (!extractionResult.success) {
@@ -1881,406 +1874,46 @@ export const uploadCarrierProfileDocument = async (req, res) => {
       });
     }
 
-    let extractedData = extractionResult.data;
+    const extractedData = normalizeCarrierProfileExtraction(extractionResult.data);
+    extractedData.fileName = req.file.originalname || null;
 
-    // Helper function to infer country from location
-    const inferCountryFromLocation = (location) => {
-      if (!location) return null;
-      const locationUpper = location.toUpperCase();
-      const locationLower = location.toLowerCase();
-      
-      // Canadian province/territory codes (2-letter)
-      const canadaProvinceCodes = ['MB', 'BC', 'ON', 'AB', 'SK', 'QC', 'NS', 'NB', 'NL', 'PE', 'YT', 'NT', 'NU'];
-      
-      // US state codes (2-letter)
-      const usaStateCodes = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'];
-      
-      // Check for province/state codes first (most reliable)
-      for (const code of canadaProvinceCodes) {
-        // Check if location contains the code as a standalone word or at start
-        if (locationUpper.includes(` ${code} `) || locationUpper.startsWith(`${code} `) || locationUpper.endsWith(` ${code}`) || locationUpper === code) {
-          return 'canada';
-        }
-      }
-      
-      for (const code of usaStateCodes) {
-        if (locationUpper.includes(` ${code} `) || locationUpper.startsWith(`${code} `) || locationUpper.endsWith(` ${code}`) || locationUpper === code) {
-          return 'usa';
-        }
-      }
-      
-      // Canada indicators (full names and cities)
-      const canadaIndicators = ['ontario', 'quebec', 'british columbia', 'alberta', 'manitoba', 'saskatchewan', 'nova scotia', 'new brunswick', 'newfoundland', 'prince edward island', 'yukon', 'northwest territories', 'nunavut', 'toronto', 'vancouver', 'montreal', 'calgary', 'edmonton', 'ottawa', 'winnipeg', 'halifax', 'quebec city', 'canada', 'cad', 'cbsa', 'manitoba', 'winnipeg'];
-      
-      // USA indicators
-      const usaIndicators = ['california', 'texas', 'florida', 'new york', 'illinois', 'pennsylvania', 'ohio', 'georgia', 'north carolina', 'michigan', 'new jersey', 'virginia', 'washington', 'arizona', 'massachusetts', 'tennessee', 'indiana', 'missouri', 'maryland', 'wisconsin', 'colorado', 'minnesota', 'south carolina', 'alabama', 'louisiana', 'kentucky', 'oregon', 'oklahoma', 'connecticut', 'utah', 'iowa', 'nevada', 'arkansas', 'mississippi', 'kansas', 'new mexico', 'nebraska', 'west virginia', 'idaho', 'hawaii', 'new hampshire', 'maine', 'montana', 'rhode island', 'delaware', 'south dakota', 'north dakota', 'alaska', 'vermont', 'wyoming', 'usa', 'us', 'united states', 'dot', 'federal', 'cvs'];
-      
-      for (const indicator of canadaIndicators) {
-        if (locationLower.includes(indicator)) return 'canada';
-      }
-      
-      for (const indicator of usaIndicators) {
-        if (locationLower.includes(indicator)) return 'usa';
-      }
-      
-      return null;
-    };
-
-    // Calculate Canada/USA counts from individual inspections if summary values are missing or 0
-    if (extractedData && extractedData.inspections && Array.isArray(extractedData.inspections) && extractedData.inspections.length > 0) {
-      if (!extractedData.summary) {
-        extractedData.summary = {};
-      }
-      
-      // Calculate country counts from individual inspections
-      // First try explicit country field, then infer from location
-      let canadaCount = 0;
-      let usaCount = 0;
-      
-      for (const inspection of extractedData.inspections) {
-        let country = null;
-        
-        // Check explicit country field first
-        if (inspection.country) {
-          country = inspection.country.toLowerCase();
-        } 
-        // Check province/state codes (most reliable)
-        else if (inspection.province) {
-          // Canadian provinces
-          const canadaProvinces = ['MB', 'BC', 'ON', 'AB', 'SK', 'QC', 'NS', 'NB', 'NL', 'PE', 'YT', 'NT', 'NU'];
-          if (canadaProvinces.includes(inspection.province.toUpperCase())) {
-            country = 'canada';
-          }
-        } else if (inspection.state) {
-          // US states (2-letter codes)
-          const usaStates = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'];
-          if (usaStates.includes(inspection.state.toUpperCase())) {
-            country = 'usa';
-          }
-        }
-        // Infer from location if country/province/state not set
-        else if (inspection.location) {
-          country = inferCountryFromLocation(inspection.location);
-        }
-        // Infer from report number pattern (e.g., MBE25-xxx, ONEA-xxx, AB29xxx)
-        else if (inspection.reportNumber) {
-          const reportUpper = inspection.reportNumber.toUpperCase();
-          if (reportUpper.startsWith('MBE') || reportUpper.startsWith('ONEA') || reportUpper.startsWith('AB') || reportUpper.startsWith('BC') || reportUpper.startsWith('SK')) {
-            country = 'canada';
-          } else if (reportUpper.match(/^[A-Z]{2}\d/)) {
-            // US state codes at start of report number
-            const stateCode = reportUpper.substring(0, 2);
-            const usaStates = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'];
-            if (usaStates.includes(stateCode)) {
-              country = 'usa';
-            }
-          }
-        }
-        
-        if (country === 'canada') {
-          canadaCount++;
-        } else if (country === 'usa') {
-          usaCount++;
-        }
-      }
-      
-      // Use calculated values if summary values are missing or null
-      if (!extractedData.summary.canadaInspections || extractedData.summary.canadaInspections === null) {
-        extractedData.summary.canadaInspections = canadaCount;
-      }
-      if (!extractedData.summary.usaInspections || extractedData.summary.usaInspections === null) {
-        extractedData.summary.usaInspections = usaCount;
-      }
-    } else if (extractedData && extractedData.summary && extractedData.summary.totalInspections) {
-      // If no individual inspections but we have totals, try to infer from document context
-      // This is a fallback - ideally AI should extract individual inspections
-      if ((!extractedData.summary.canadaInspections || extractedData.summary.canadaInspections === null) &&
-          (!extractedData.summary.usaInspections || extractedData.summary.usaInspections === null)) {
-        // If we can't determine, set to null so frontend can show appropriate message
-        // But try to infer from document if possible (this would require parsing the full document text)
-        console.log('⚠️ No individual inspections extracted and no country breakdown in summary. Cannot calculate Canada/USA counts.');
-      }
-    }
-
-    // Check for duplicates in preview mode
-    let duplicateWarnings = [];
-    if (isPreview && extractedData) {
-      // Check individual inspections for duplicates
-      if (extractedData.inspections && Array.isArray(extractedData.inspections) && extractedData.inspections.length > 0) {
-        for (const inspectionData of extractedData.inspections) {
-          const duplicateQuery = { company: companyId };
-          
-          // Check by inspectionId
-          if (inspectionData.inspectionId) {
-            duplicateQuery.inspectionId = inspectionData.inspectionId;
-            const existing = await CvsaInspection.findOne(duplicateQuery);
-            if (existing) {
-              duplicateWarnings.push(`Inspection ID "${inspectionData.inspectionId}" already exists`);
-              continue;
-            }
-          }
-          
-          // Check by reportNumber
-          if (inspectionData.reportNumber) {
-            duplicateQuery.inspectionId = undefined;
-            duplicateQuery.reportNumber = inspectionData.reportNumber;
-            const existing = await CvsaInspection.findOne(duplicateQuery);
-            if (existing) {
-              duplicateWarnings.push(`Report Number "${inspectionData.reportNumber}" already exists`);
-              continue;
-            }
-          }
-          
-          // Check by date, location, and status (fuzzy duplicate check)
-          if (inspectionData.date && inspectionData.location) {
-            const inspectionDate = new Date(inspectionData.date);
-            const startOfDay = new Date(inspectionDate);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(inspectionDate);
-            endOfDay.setHours(23, 59, 59, 999);
-            
-            const fuzzyQuery = {
-              company: companyId,
-              date: { $gte: startOfDay, $lte: endOfDay },
-              location: { $regex: inspectionData.location, $options: 'i' },
-              status: inspectionData.status || 'pass'
-            };
-            
-            const existing = await CvsaInspection.findOne(fuzzyQuery);
-            if (existing) {
-              duplicateWarnings.push(`Similar inspection on ${inspectionData.date} at ${inspectionData.location} may already exist`);
-            }
-          }
-        }
-      }
-    }
-
-    // If preview mode, return extracted data without saving
-    if (isPreview) {
-      return res.json({
-        success: true,
-        message: duplicateWarnings.length > 0 
-          ? `Data extracted successfully. Found ${duplicateWarnings.length} potential duplicate(s). Please review before saving.`
-          : "Data extracted successfully. Please review and confirm to save.",
-        data: {
-          extractedData: extractedData,
-          preview: true,
-          duplicateWarnings: duplicateWarnings.length > 0 ? duplicateWarnings : undefined
-        }
+    if (extractedData.inspections.length === 0) {
+      return res.status(422).json({
+        success: false,
+        message: "No inspection rows could be read from this document. Please check it is a carrier profile with an inspection list, or upload a clearer copy.",
+        data: { extractedData }
       });
     }
 
-    const createdInspections = [];
-    const errors = [];
-
-    // Helper function to find vehicle by unit number or plate
-    const findVehicle = async (unitNo, plateNumber, companyId) => {
-      if (!unitNo && !plateNumber) return null;
-      
-      const query = { company: companyId };
-      const orConditions = [];
-      
-      if (unitNo) {
-        orConditions.push(
-          { unitNumber: unitNo },
-          { internalId: unitNo }
-        );
-      }
-      if (plateNumber) {
-        orConditions.push({ plateNumber: plateNumber });
-      }
-      
-      if (orConditions.length > 0) {
-        query.$or = orConditions;
-      }
-      
-      return await Vehicle.findOne(query);
-    };
-
-    // Helper function to find driver by name or license number
-    const findDriver = async (driverName, licenseNumber, companyId) => {
-      if (!driverName && !licenseNumber) return null;
-      
-      const query = { company: companyId, role: 'driver' };
-      const orConditions = [];
-      
-      if (driverName) {
-        orConditions.push({ name: { $regex: driverName, $options: 'i' } });
-      }
-      if (licenseNumber) {
-        orConditions.push({ licenseNumber: licenseNumber });
-      }
-      
-      if (orConditions.length > 0) {
-        query.$or = orConditions;
-      }
-      
-      return await User.findOne(query);
-    };
-
-    // Process individual inspections if available
-    if (extractedData.inspections && Array.isArray(extractedData.inspections) && extractedData.inspections.length > 0) {
-      console.log(`📋 Processing ${extractedData.inspections.length} individual inspection records...`);
-      
-      for (const inspectionData of extractedData.inspections) {
-        try {
-          // Parse date
-          let inspectionDate = new Date();
-          if (inspectionData.date) {
-            inspectionDate = new Date(inspectionData.date);
-          } else if (inspectionData.month && inspectionData.year) {
-            const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-            const monthIndex = monthNames.findIndex(m => m.toLowerCase() === inspectionData.month.toLowerCase());
-            if (monthIndex !== -1) {
-              inspectionDate = new Date(inspectionData.year, monthIndex, 15); // Use 15th as default day
-            }
-          }
-
-          // Find vehicle
-          let vehicle = null;
-          if (inspectionData.vehicleUnitNo) {
-            vehicle = await findVehicle(inspectionData.vehicleUnitNo, null, companyId);
-          }
-
-          // Find driver
-          let driver = null;
-          if (inspectionData.driverName || inspectionData.driverLicenseNumber) {
-            driver = await findDriver(inspectionData.driverName, inspectionData.driverLicenseNumber, companyId);
-          }
-
-          // If no vehicle/driver found, we'll still create the record but without references
-          // This allows the data to be saved and manually linked later
-
-          // Create inspection record
-          const inspectionRecord = {
-            inspectionId: inspectionData.inspectionId || `CVSA-${inspectionData.year || new Date().getFullYear()}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            country: inspectionData.country || null,
-            date: inspectionDate,
-            location: inspectionData.location || 'Unknown',
-            status: inspectionData.status || 'pass',
-            inspectionType: inspectionData.inspectionType || 'level-1',
-            reportNumber: inspectionData.reportNumber || null,
-            inspectorName: inspectionData.inspectorName || 'Unknown',
-            driverLicenseNumber: inspectionData.driverLicenseNumber || null,
-            notes: inspectionData.notes || null,
-            company: companyId,
-            vehicle: vehicle ? vehicle._id : null,
-            driver: driver ? driver._id : null,
-            violations: inspectionData.violations && Array.isArray(inspectionData.violations) 
-              ? inspectionData.violations.map(v => ({
-                  code: v.code || 'N/A',
-                  description: v.description || 'No description',
-                  severity: v.severity || 'minor'
-                }))
-              : []
-          };
-
-          // Check if inspection already exists (by inspectionId or reportNumber)
-          const existingQuery = { company: companyId };
-          if (inspectionRecord.inspectionId) {
-            existingQuery.inspectionId = inspectionRecord.inspectionId;
-          } else if (inspectionRecord.reportNumber) {
-            existingQuery.reportNumber = inspectionRecord.reportNumber;
-          }
-
-          const existing = await CvsaInspection.findOne(existingQuery);
-          if (existing) {
-            console.log(`⚠️ Inspection already exists: ${inspectionRecord.inspectionId || inspectionRecord.reportNumber}`);
-            errors.push(`Inspection ${inspectionRecord.inspectionId || inspectionRecord.reportNumber} already exists`);
-            continue;
-          }
-
-          const created = await CvsaInspection.create(inspectionRecord);
-          createdInspections.push(created);
-          console.log(`✅ Created inspection: ${created.inspectionId}`);
-        } catch (error) {
-          console.error('Error creating inspection record:', error);
-          errors.push(`Failed to create inspection: ${error.message}`);
-        }
-      }
+    if (!isPreview) {
+      const result = await persistCarrierProfile({ extractedData, companyId, userId: req.user?._id });
+      return res.status(result.status).json(result.body);
     }
 
-    // If only summary data is available, create aggregated records
-    if (createdInspections.length === 0 && extractedData.summary) {
-      const summary = extractedData.summary;
-      console.log('📊 Processing summary data...');
-      
-      // Parse period to get year/month
-      let year = new Date().getFullYear();
-      let month = new Date().getMonth();
-      
-      if (summary.period) {
-        const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-        const periodLower = summary.period.toLowerCase();
-        
-        // Try to extract year
-        const yearMatch = periodLower.match(/\b(20\d{2})\b/);
-        if (yearMatch) {
-          year = parseInt(yearMatch[1]);
-        }
-        
-        // Try to extract month
-        for (let i = 0; i < monthNames.length; i++) {
-          if (periodLower.includes(monthNames[i])) {
-            month = i;
-            break;
-          }
-        }
-      }
+    const duplicateWarnings = await findCarrierProfileDuplicates(extractedData.inspections, companyId);
+    extractedData.inspections = extractedData.inspections.map((row, index) => ({
+      ...row,
+      alreadyExists: duplicateWarnings.some((w) => w.index === index)
+    }));
 
-      // Create records for each status type
-      const statusCounts = {
-        pass: summary.totalPass || 0,
-        fail: summary.totalFail || 0,
-        warning: summary.totalWarning || 0,
-        'out-of-service': summary.totalOutOfService || 0
-      };
-
-      // Create aggregated inspection records
-      for (const [status, count] of Object.entries(statusCounts)) {
-        if (count > 0) {
-          // Create multiple records based on count
-          for (let i = 0; i < Math.min(count, 100); i++) { // Limit to 100 per status to avoid too many records
-            try {
-              const inspectionDate = new Date(year, month, 15 + i); // Spread dates across the month
-              
-              const inspectionRecord = {
-                inspectionId: `CVSA-${year}-${month + 1}-${status}-${i + 1}-${Date.now()}`,
-                country: summary.canadaInspections > summary.usaInspections ? 'canada' : 'usa',
-                date: inspectionDate,
-                location: 'From Carrier Profile Document',
-                status: status,
-                inspectionType: 'level-1',
-                inspectorName: 'Document Import',
-                notes: `Imported from carrier profile document. Summary: ${summary.period || 'Unknown period'}`,
-                company: companyId
-              };
-
-              const created = await CvsaInspection.create(inspectionRecord);
-              createdInspections.push(created);
-            } catch (error) {
-              console.error(`Error creating aggregated inspection record for ${status}:`, error);
-              errors.push(`Failed to create ${status} inspection: ${error.message}`);
-            }
-          }
-        }
-      }
+    const issues = [];
+    const missingCountry = extractedData.inspections.filter((r) => !r.country).length;
+    const missingStatus = extractedData.inspections.filter((r) => !r.status).length;
+    if (missingCountry) issues.push(`${missingCountry} row(s) need a country`);
+    if (missingStatus) issues.push(`${missingStatus} row(s) need a result`);
+    const docTotal = extractedData.documentTotals.totalInspections;
+    if (docTotal !== null && docTotal !== extractedData.inspections.length) {
+      issues.push(`The document lists ${docTotal} inspections but ${extractedData.inspections.length} rows were read — please compare with the document`);
     }
 
-    res.json({
+    return res.json({
       success: true,
-      message: `Successfully processed carrier profile document. Created ${createdInspections.length} inspection record(s).`,
+      message: "Data extracted. Please review the rows before saving.",
       data: {
-        createdCount: createdInspections.length,
-        errors: errors.length > 0 ? errors : undefined,
-        inspections: createdInspections.map(i => ({
-          _id: i._id,
-          inspectionId: i.inspectionId,
-          date: i.date,
-          status: i.status,
-          location: i.location
-        })),
-        summary: extractedData.summary || null
+        extractedData,
+        preview: true,
+        issues,
+        duplicateWarnings: duplicateWarnings.length > 0 ? duplicateWarnings.map((w) => w.message) : undefined
       }
     });
   } catch (err) {
@@ -2292,493 +1925,466 @@ export const uploadCarrierProfileDocument = async (req, res) => {
   }
 };
 
-// ✅ CVSA Inspection - Save Extracted Carrier Profile Data
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Checks each row against inspections already saved for the company
+const findCarrierProfileDuplicates = async (rows, companyId) => {
+  const warnings = [];
+  const companyFilter = {};
+  applyCompanyFilter(companyFilter, companyId);
+
+  const reportNumbers = rows.map((r) => r.reportNumber).filter(Boolean);
+  const existing = reportNumbers.length
+    ? await CvsaInspection.find({ ...companyFilter, reportNumber: { $in: reportNumbers } }).select('reportNumber').lean()
+    : [];
+  const existingSet = new Set(existing.map((e) => String(e.reportNumber).toUpperCase()));
+
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (row.reportNumber && existingSet.has(row.reportNumber.toUpperCase())) {
+      warnings.push({ index, message: `Report # ${row.reportNumber} is already saved and will be skipped` });
+    }
+  }
+  return warnings;
+};
+
+// Turns one reviewed row into a CvsaInspection document (or an error message)
+const prepareCarrierProfileRow = (row, index) => {
+  const label = row.reportNumber ? `Report # ${row.reportNumber}` : `Row ${index + 1}`;
+  const date = parseDocumentDate(row.date);
+  const status = normalizeStatus(row.status);
+  const country = ['canada', 'usa'].includes(row.country) ? row.country : resolveInspectionCountry(row).country;
+
+  if (!date) return { error: `${label}: missing or unreadable inspection date` };
+  if (!status) return { error: `${label}: missing result (pass / fail / warning / OOS)` };
+  if (!country) return { error: `${label}: country could not be determined` };
+
+  return {
+    record: {
+      reportNumber: row.reportNumber ? String(row.reportNumber).trim() : null,
+      date: new Date(`${date}T12:00:00Z`),
+      country,
+      jurisdiction: row.jurisdiction || null,
+      location: (row.location && String(row.location).trim()) || (row.jurisdiction ? `${row.jurisdiction}` : 'Not specified'),
+      status,
+      inspectionType: normalizeLevel(row.inspectionType ?? row.level),
+      inspectorName: row.inspectorName || null,
+      driverLicenseNumber: row.driverLicenseNumber || null,
+      outOfServiceIssued: status === 'out-of-service',
+      notes: row.notes || null,
+      violations: Array.isArray(row.violations)
+        ? row.violations
+            .filter((v) => v && (v.code || v.description))
+            .map((v) => ({
+              code: v.code || 'N/A',
+              description: v.description || 'No description',
+              severity: ['minor', 'major', 'critical'].includes(v.severity) ? v.severity : 'minor'
+            }))
+        : []
+    },
+    vehicleUnitNo: row.vehicleUnitNo || null,
+    driverName: row.driverName || null
+  };
+};
+
+const persistCarrierProfile = async ({ extractedData, companyId, userId }) => {
+  const rows = Array.isArray(extractedData?.inspections) ? extractedData.inspections : [];
+  if (rows.length === 0) {
+    return { status: 400, body: { success: false, message: "There are no inspection rows to save." } };
+  }
+
+  const companyFilter = {};
+  applyCompanyFilter(companyFilter, companyId);
+  const companyObjectId = normalizeToObjectId(companyId) || companyId;
+
+  const errors = [];
+  const prepared = [];
+  rows.forEach((row, index) => {
+    const result = prepareCarrierProfileRow(row, index);
+    if (result.error) errors.push(result.error);
+    else prepared.push(result);
+  });
+
+  // Skip report numbers that are already saved (or repeated within this upload)
+  const seenReports = new Set();
+  const reportNumbers = prepared.map((p) => p.record.reportNumber).filter(Boolean);
+  const existing = reportNumbers.length
+    ? await CvsaInspection.find({ ...companyFilter, reportNumber: { $in: reportNumbers } }).select('reportNumber').lean()
+    : [];
+  existing.forEach((e) => seenReports.add(String(e.reportNumber).toUpperCase()));
+
+  const toCreate = [];
+  let skipped = 0;
+  for (const item of prepared) {
+    const report = item.record.reportNumber;
+    if (report && seenReports.has(report.toUpperCase())) {
+      skipped++;
+      errors.push(`Report # ${report} already exists — skipped`);
+      continue;
+    }
+    if (!report) {
+      // No report number: treat same day + location + result as the same inspection
+      const day = item.record.date;
+      const dup = await CvsaInspection.findOne({
+        ...companyFilter,
+        date: { $gte: new Date(day.getTime() - 12 * 3600 * 1000), $lt: new Date(day.getTime() + 12 * 3600 * 1000) },
+        location: { $regex: `^${escapeRegex(item.record.location)}$`, $options: 'i' },
+        status: item.record.status
+      }).lean();
+      if (dup) {
+        skipped++;
+        errors.push(`Inspection on ${day.toISOString().slice(0, 10)} at ${item.record.location} already exists — skipped`);
+        continue;
+      }
+    }
+    if (report) seenReports.add(report.toUpperCase());
+    toCreate.push(item);
+  }
+
+  if (toCreate.length === 0) {
+    return {
+      status: 200,
+      body: {
+        success: false,
+        message: errors.length ? `Nothing was saved. ${errors[0]}${errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''}` : 'Nothing was saved.',
+        data: { createdCount: 0, skippedCount: skipped, errors }
+      }
+    };
+  }
+
+  const importRecord = await CarrierProfileImport.create({
+    company: companyObjectId,
+    fileName: extractedData.fileName || null,
+    carrierName: extractedData.carrier?.name || null,
+    period: extractedData.period?.label || extractedData.summary?.period || null,
+    periodStart: parseDocumentDate(extractedData.period?.start) ? new Date(`${parseDocumentDate(extractedData.period.start)}T12:00:00Z`) : null,
+    periodEnd: parseDocumentDate(extractedData.period?.end) ? new Date(`${parseDocumentDate(extractedData.period.end)}T12:00:00Z`) : null,
+    safetyRating: normalizeSafetyRating(extractedData.carrier?.safetyRating || extractedData.summary?.safetyRating),
+    documentTotals: extractedData.documentTotals || {},
+    rowsInDocument: rows.length,
+    createdBy: userId
+  });
+
+  // Link to fleet records where the plate / driver name matches exactly
+  const findVehicle = async (unitNo) => {
+    if (!unitNo) return null;
+    const exact = { $regex: `^${escapeRegex(unitNo)}$`, $options: 'i' };
+    return Vehicle.findOne({ ...companyFilter, $or: [{ plateNumber: exact }, { unitNumber: exact }, { internalId: exact }] }).select('_id').lean();
+  };
+  const findDriver = async (name, license) => {
+    if (!name && !license) return null;
+    const or = [];
+    if (license) or.push({ licenseNumber: license });
+    if (name) or.push({ name: { $regex: `^${escapeRegex(name)}$`, $options: 'i' } });
+    return User.findOne({ ...companyFilter, role: 'driver', $or: or }).select('_id').lean();
+  };
+
+  const created = [];
+  for (let i = 0; i < toCreate.length; i++) {
+    const { record, vehicleUnitNo, driverName } = toCreate[i];
+    try {
+      const vehicle = await findVehicle(vehicleUnitNo);
+      const driver = await findDriver(driverName, record.driverLicenseNumber);
+      const doc = await CvsaInspection.create({
+        ...record,
+        inspectionId: `CP-${(record.reportNumber || record.date.toISOString().slice(0, 10)).replace(/\s+/g, '')}-${importRecord._id.toString().slice(-6)}-${i + 1}`,
+        notes: [record.notes, vehicleUnitNo && !vehicle ? `Unit/plate on profile: ${vehicleUnitNo}` : null, driverName && !driver ? `Driver on profile: ${driverName}` : null]
+          .filter(Boolean)
+          .join(' · ') || null,
+        vehicle: vehicle?._id || null,
+        driver: driver?._id || null,
+        source: 'carrier-profile',
+        importBatch: importRecord._id,
+        company: companyObjectId
+      });
+      created.push(doc);
+    } catch (error) {
+      console.error('Error creating carrier profile inspection:', error);
+      errors.push(`${record.reportNumber ? `Report # ${record.reportNumber}` : `Row ${i + 1}`}: ${error.message}`);
+    }
+  }
+
+  importRecord.createdCount = created.length;
+  importRecord.skippedCount = rows.length - created.length;
+  if (created.length === 0) {
+    await importRecord.deleteOne();
+  } else {
+    await importRecord.save();
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: created.length > 0,
+      message: created.length > 0
+        ? `Saved ${created.length} inspection${created.length === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} already on file` : ''}.`
+        : 'Nothing was saved.',
+      data: {
+        importId: created.length > 0 ? importRecord._id : null,
+        createdCount: created.length,
+        skippedCount: rows.length - created.length,
+        errors: errors.length > 0 ? errors : undefined
+      }
+    }
+  };
+};
+
+// ✅ CVSA Inspection - Save reviewed carrier profile rows
 export const saveCarrierProfileData = async (req, res) => {
   try {
     const { extractedData } = req.body;
-
     if (!extractedData) {
-      return res.status(400).json({
-        success: false,
-        message: "Extracted data is required"
-      });
+      return res.status(400).json({ success: false, message: "Extracted data is required" });
     }
 
     const companyId = getUserCompanyId(req.user);
-    const isSuperadmin = req.user?.role === 'superadmin';
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: "Please complete company settings first." });
+    }
 
-    if (!isSuperadmin && !companyId) {
-      return res.status(400).json({
-        success: false,
-        message: "Please complete company settings first."
+    const result = await persistCarrierProfile({ extractedData, companyId, userId: req.user?._id });
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    console.error('Error saving carrier profile data:', err);
+    res.status(500).json({ success: false, message: err.message || "Failed to save carrier profile data" });
+  }
+};
+
+// Records created by the old importer carry no import id. Manual inspections always
+// have a vehicle and driver, so unlinked rows with neither came from a document upload.
+const legacyCarrierProfileQuery = (companyFilter) => ({
+  ...companyFilter,
+  importBatch: null,
+  vehicle: null,
+  driver: null
+});
+
+// ✅ CVSA Inspection - List uploaded carrier profiles
+export const getCarrierProfileImports = async (req, res) => {
+  try {
+    const companyId = getUserCompanyId(req.user);
+    if (!companyId) {
+      return res.json({ success: true, data: [] });
+    }
+    const companyFilter = {};
+    applyCompanyFilter(companyFilter, companyId);
+
+    const imports = await CarrierProfileImport.find(companyFilter)
+      .sort({ createdAt: -1 })
+      .populate('createdBy', 'name')
+      .lean();
+
+    // Live count, so rows deleted from the CVSA page are reflected
+    const counts = await CvsaInspection.aggregate([
+      { $match: { ...companyFilter, importBatch: { $in: imports.map((i) => i._id) } } },
+      { $group: { _id: '$importBatch', count: { $sum: 1 }, first: { $min: '$date' }, last: { $max: '$date' } } }
+    ]);
+    const countMap = new Map(counts.map((c) => [String(c._id), c]));
+
+    const data = imports.map((imp) => {
+      const c = countMap.get(String(imp._id));
+      return {
+        _id: imp._id,
+        fileName: imp.fileName,
+        carrierName: imp.carrierName,
+        period: imp.period,
+        safetyRating: imp.safetyRating,
+        uploadedAt: imp.createdAt,
+        uploadedBy: imp.createdBy?.name || null,
+        inspectionCount: c?.count || 0,
+        firstInspection: c?.first || null,
+        lastInspection: c?.last || null,
+        legacy: false
+      };
+    });
+
+    const legacy = await CvsaInspection.aggregate([
+      { $match: legacyCarrierProfileQuery(companyFilter) },
+      { $group: { _id: null, count: { $sum: 1 }, first: { $min: '$date' }, last: { $max: '$date' }, uploadedAt: { $max: '$createdAt' } } }
+    ]);
+    if (legacy[0]?.count) {
+      data.push({
+        _id: 'legacy',
+        fileName: 'Earlier uploads (before Nov 2026 update)',
+        carrierName: null,
+        period: null,
+        safetyRating: null,
+        uploadedAt: legacy[0].uploadedAt,
+        uploadedBy: null,
+        inspectionCount: legacy[0].count,
+        firstInspection: legacy[0].first,
+        lastInspection: legacy[0].last,
+        legacy: true
       });
     }
 
-    const createdInspections = [];
-    const errors = [];
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error listing carrier profile imports:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-    // Helper function to find vehicle by unit number or plate
-    const findVehicle = async (unitNo, plateNumber, companyId) => {
-      if (!unitNo && !plateNumber) return null;
-      
-      const query = { company: companyId };
-      const orConditions = [];
-      
-      if (unitNo) {
-        orConditions.push(
-          { unitNumber: unitNo },
-          { internalId: unitNo }
-        );
-      }
-      if (plateNumber) {
-        orConditions.push({ plateNumber: plateNumber });
-      }
-      
-      if (orConditions.length > 0) {
-        query.$or = orConditions;
-      }
-      
-      return await Vehicle.findOne(query);
-    };
+// ✅ CVSA Inspection - Delete an uploaded carrier profile and every inspection it created
+export const deleteCarrierProfileImport = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = getUserCompanyId(req.user);
+    if (!companyId) {
+      return res.status(403).json({ success: false, message: "No company assigned." });
+    }
+    const companyFilter = {};
+    applyCompanyFilter(companyFilter, companyId);
 
-    // Helper function to find driver by name or license number
-    const findDriver = async (driverName, licenseNumber, companyId) => {
-      if (!driverName && !licenseNumber) return null;
-      
-      const query = { company: companyId, role: 'driver' };
-      const orConditions = [];
-      
-      if (driverName) {
-        orConditions.push({ name: { $regex: driverName, $options: 'i' } });
-      }
-      if (licenseNumber) {
-        orConditions.push({ licenseNumber: licenseNumber });
-      }
-      
-      if (orConditions.length > 0) {
-        query.$or = orConditions;
-      }
-      
-      return await User.findOne(query);
-    };
-
-    // Process individual inspections if available
-    if (extractedData.inspections && Array.isArray(extractedData.inspections) && extractedData.inspections.length > 0) {
-      console.log(`📋 Processing ${extractedData.inspections.length} individual inspection records...`);
-      
-      for (const inspectionData of extractedData.inspections) {
-        try {
-          // Parse date
-          let inspectionDate = new Date();
-          if (inspectionData.date) {
-            inspectionDate = new Date(inspectionData.date);
-          } else if (inspectionData.month && inspectionData.year) {
-            const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-            const monthIndex = monthNames.findIndex(m => m.toLowerCase() === inspectionData.month.toLowerCase());
-            if (monthIndex !== -1) {
-              inspectionDate = new Date(inspectionData.year, monthIndex, 15);
-            }
-          }
-
-          // Find vehicle
-          let vehicle = null;
-          if (inspectionData.vehicleUnitNo) {
-            vehicle = await findVehicle(inspectionData.vehicleUnitNo, null, companyId);
-          }
-
-          // Find driver
-          let driver = null;
-          if (inspectionData.driverName || inspectionData.driverLicenseNumber) {
-            driver = await findDriver(inspectionData.driverName, inspectionData.driverLicenseNumber, companyId);
-          }
-
-          // Create inspection record
-          const inspectionRecord = {
-            inspectionId: inspectionData.inspectionId || `CVSA-${inspectionData.year || new Date().getFullYear()}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            country: inspectionData.country || null,
-            date: inspectionDate,
-            location: inspectionData.location || 'Unknown',
-            status: inspectionData.status || 'pass',
-            inspectionType: inspectionData.inspectionType || 'level-1',
-            reportNumber: inspectionData.reportNumber || null,
-            inspectorName: inspectionData.inspectorName || 'Unknown',
-            driverLicenseNumber: inspectionData.driverLicenseNumber || null,
-            notes: inspectionData.notes || null,
-            company: companyId,
-            vehicle: vehicle ? vehicle._id : null,
-            driver: driver ? driver._id : null,
-            violations: inspectionData.violations && Array.isArray(inspectionData.violations) 
-              ? inspectionData.violations.map(v => ({
-                  code: v.code || 'N/A',
-                  description: v.description || 'No description',
-                  severity: v.severity || 'minor'
-                }))
-              : []
-          };
-
-          // Check if inspection already exists (multiple criteria to prevent duplicates)
-          let existing = null;
-          
-          // First check by inspectionId
-          if (inspectionRecord.inspectionId) {
-            existing = await CvsaInspection.findOne({ 
-              company: companyId, 
-              inspectionId: inspectionRecord.inspectionId 
-            });
-            if (existing) {
-              console.log(`⚠️ Inspection already exists (by ID): ${inspectionRecord.inspectionId}`);
-              errors.push(`Inspection ID "${inspectionRecord.inspectionId}" already exists`);
-              continue;
-            }
-          }
-          
-          // Check by reportNumber
-          if (inspectionRecord.reportNumber) {
-            existing = await CvsaInspection.findOne({ 
-              company: companyId, 
-              reportNumber: inspectionRecord.reportNumber 
-            });
-            if (existing) {
-              console.log(`⚠️ Inspection already exists (by Report Number): ${inspectionRecord.reportNumber}`);
-              errors.push(`Report Number "${inspectionRecord.reportNumber}" already exists`);
-              continue;
-            }
-          }
-          
-          // Fuzzy duplicate check: same date, location, and status
-          if (inspectionRecord.date && inspectionRecord.location) {
-            const inspectionDate = new Date(inspectionRecord.date);
-            const startOfDay = new Date(inspectionDate);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(inspectionDate);
-            endOfDay.setHours(23, 59, 59, 999);
-            
-            existing = await CvsaInspection.findOne({
-              company: companyId,
-              date: { $gte: startOfDay, $lte: endOfDay },
-              location: { $regex: inspectionRecord.location, $options: 'i' },
-              status: inspectionRecord.status
-            });
-            
-            if (existing) {
-              console.log(`⚠️ Similar inspection already exists: ${inspectionRecord.date.toLocaleDateString()} at ${inspectionRecord.location}`);
-              errors.push(`Similar inspection on ${inspectionRecord.date.toLocaleDateString()} at ${inspectionRecord.location} already exists`);
-              continue;
-            }
-          }
-
-          const created = await CvsaInspection.create(inspectionRecord);
-          createdInspections.push(created);
-          console.log(`✅ Created inspection: ${created.inspectionId}`);
-        } catch (error) {
-          console.error('Error creating inspection record:', error);
-          errors.push(`Failed to create inspection: ${error.message}`);
-        }
-      }
+    if (id === 'legacy') {
+      const result = await CvsaInspection.deleteMany(legacyCarrierProfileQuery(companyFilter));
+      // The old importer also wrote one summary row per upload; those drove the wrong dashboard numbers
+      await CarrierPerformance.deleteMany(companyFilter);
+      return res.json({
+        success: true,
+        message: `Deleted ${result.deletedCount} inspection(s) from earlier uploads`,
+        data: { deletedCount: result.deletedCount }
+      });
     }
 
-    // If only summary data is available, create aggregated records
-    if (createdInspections.length === 0 && extractedData.summary) {
-      const summary = extractedData.summary;
-      console.log('📊 Processing summary data...');
-      
-      // Parse period to get year/month
-      let year = new Date().getFullYear();
-      let month = new Date().getMonth();
-      
-      if (summary.period) {
-        const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-        const periodLower = summary.period.toLowerCase();
-        
-        // Try to extract year
-        const yearMatch = periodLower.match(/\b(20\d{2})\b/);
-        if (yearMatch) {
-          year = parseInt(yearMatch[1]);
-        }
-        
-        // Try to extract month
-        for (let i = 0; i < monthNames.length; i++) {
-          if (periodLower.includes(monthNames[i])) {
-            month = i;
-            break;
-          }
-        }
-      }
-
-      // Create records for each status type
-      const statusCounts = {
-        pass: summary.totalPass || 0,
-        fail: summary.totalFail || 0,
-        warning: summary.totalWarning || 0,
-        'out-of-service': summary.totalOutOfService || 0
-      };
-
-      // Create aggregated inspection records
-      for (const [status, count] of Object.entries(statusCounts)) {
-        if (count > 0) {
-          // Check if similar aggregated records already exist for this period
-          const periodStart = new Date(year, month, 1);
-          const periodEnd = new Date(year, month + 1, 0, 23, 59, 59);
-          
-          const existingAggregated = await CvsaInspection.countDocuments({
-            company: companyId,
-            date: { $gte: periodStart, $lte: periodEnd },
-            location: 'From Carrier Profile Document',
-            status: status,
-            inspectorName: 'Document Import'
-          });
-          
-          if (existingAggregated > 0) {
-            console.log(`⚠️ ${existingAggregated} similar aggregated ${status} inspection(s) already exist for this period`);
-            errors.push(`${existingAggregated} similar ${status} inspection(s) already exist for ${summary.period || 'this period'}. Skipping to avoid duplicates.`);
-            continue;
-          }
-          
-          // Create multiple records based on count
-          for (let i = 0; i < Math.min(count, 100); i++) {
-            try {
-              const inspectionDate = new Date(year, month, 15 + i);
-              
-              const inspectionRecord = {
-                inspectionId: `CVSA-${year}-${month + 1}-${status}-${i + 1}-${Date.now()}`,
-                country: summary.canadaInspections > summary.usaInspections ? 'canada' : 'usa',
-                date: inspectionDate,
-                location: 'From Carrier Profile Document',
-                status: status,
-                inspectionType: 'level-1',
-                inspectorName: 'Document Import',
-                notes: `Imported from carrier profile document. Summary: ${summary.period || 'Unknown period'}`,
-                company: companyId
-              };
-
-              const created = await CvsaInspection.create(inspectionRecord);
-              createdInspections.push(created);
-            } catch (error) {
-              console.error(`Error creating aggregated inspection record for ${status}:`, error);
-              errors.push(`Failed to create ${status} inspection: ${error.message}`);
-            }
-          }
-        }
-      }
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid upload id" });
     }
 
-    // Automatically create/update Carrier Performance record
-    let performanceRecord = null;
-    if (extractedData.summary) {
-      try {
-        const summary = extractedData.summary;
-        const currentDate = new Date();
-        const month = currentDate.getMonth() + 1; // 1-12
-        const year = currentDate.getFullYear();
-        
-        // Determine month/year from period if available, otherwise use current month
-        let recordMonth = month;
-        let recordYear = year;
-        
-        if (summary.period) {
-          // Try to extract month/year from period string (e.g., "January 2024", "Q1 2024", "2024")
-          const periodLower = summary.period.toLowerCase();
-          const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-          for (let i = 0; i < monthNames.length; i++) {
-            if (periodLower.includes(monthNames[i])) {
-              recordMonth = i + 1;
-              break;
-            }
-          }
-          // Extract year
-          const yearMatch = summary.period.match(/\b(20\d{2})\b/);
-          if (yearMatch) {
-            recordYear = parseInt(yearMatch[1]);
-          }
-        }
-
-        // Calculate performance metrics
-        const totalInspections = summary.totalInspections || 0;
-        const passCount = summary.totalPass || 0;
-        const failCount = summary.totalFail || 0;
-        const warningCount = summary.totalWarning || 0;
-        const outOfServiceCount = summary.totalOutOfService || 0;
-        const canadaInspections = summary.canadaInspections || 0;
-        const usaInspections = summary.usaInspections || 0;
-        
-        const passRate = totalInspections > 0 ? Math.round((passCount / totalInspections) * 100) : 0;
-        const ossRate = totalInspections > 0 ? Math.round((outOfServiceCount / totalInspections) * 100) : 0;
-
-        // Use upsert to create or update
-        performanceRecord = await CarrierPerformance.findOneAndUpdate(
-          { company: companyId, year: recordYear, month: recordMonth },
-          {
-            company: companyId,
-            month: recordMonth,
-            year: recordYear,
-            totalInspections,
-            passCount,
-            failCount,
-            warningCount,
-            outOfServiceCount,
-            canadaInspections,
-            usaInspections,
-            passRate,
-            ossRate,
-            safetyRating: summary.safetyRating || null,
-            documentSource: req.body.documentSource || null,
-            documentUploadedAt: new Date(),
-            notes: `Auto-generated from carrier profile document upload`,
-            createdBy: req.user?._id
-          },
-          { upsert: true, new: true }
-        );
-
-        console.log(`✅ Carrier Performance record ${performanceRecord ? 'created/updated' : 'failed'} for ${recordMonth}/${recordYear}`);
-      } catch (perfError) {
-        console.error('Error creating/updating carrier performance record:', perfError);
-        // Don't fail the whole request if performance record creation fails
-        errors.push(`Warning: Could not create carrier performance record: ${perfError.message}`);
-      }
+    const importRecord = await CarrierProfileImport.findOne({ _id: id, ...companyFilter });
+    if (!importRecord) {
+      return res.status(404).json({ success: false, message: "Upload not found" });
     }
+
+    const result = await CvsaInspection.deleteMany({ ...companyFilter, importBatch: importRecord._id });
+    await importRecord.deleteOne();
 
     res.json({
       success: true,
-      message: `Successfully saved carrier profile data. Created ${createdInspections.length} inspection record(s).${performanceRecord ? ' Carrier performance record updated.' : ''}`,
-      data: {
-        createdCount: createdInspections.length,
-        errors: errors.length > 0 ? errors : undefined,
-        inspections: createdInspections.map(i => ({
-          _id: i._id,
-          inspectionId: i.inspectionId,
-          date: i.date,
-          status: i.status,
-          location: i.location
-        })),
-        summary: extractedData.summary || null,
-        performanceRecord: performanceRecord ? {
-          month: performanceRecord.month,
-          year: performanceRecord.year,
-          passRate: performanceRecord.passRate,
-          ossRate: performanceRecord.ossRate
-        } : null
-      }
+      message: `Deleted the upload and ${result.deletedCount} inspection(s) it created`,
+      data: { deletedCount: result.deletedCount }
     });
-  } catch (err) {
-    console.error('Error saving carrier profile data:', err);
-    res.status(500).json({
-      success: false,
-      message: err.message || "Failed to save carrier profile data"
-    });
+  } catch (error) {
+    console.error('Error deleting carrier profile import:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 /**
  * Get Carrier Performance History and Trends
+ * Calculated from the saved CVSA inspections (imported and manual), so the numbers
+ * always match the inspection list and follow the Canada / USA filter.
  */
 export const getCarrierPerformance = async (req, res) => {
   try {
-    const { year, months } = req.query;
+    const { country } = req.query;
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
 
     if (!isSuperadmin && !companyId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Company assignment required'
-      });
+      return res.status(400).json({ success: false, message: 'Company assignment required' });
     }
 
-    const query = {};
-    if (!isSuperadmin) query.company = companyId;
-    
-    if (year) {
-      query.year = parseInt(year);
-    }
+    const match = {};
+    if (!isSuperadmin) applyCompanyFilter(match, companyId);
+    if (country && ['canada', 'usa'].includes(country)) match.country = country;
 
-    // Get all performance records
-    const records = await CarrierPerformance.find(query)
-      .sort({ year: -1, month: -1 })
-      .lean();
+    const now = new Date();
+    const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
 
-    // Calculate trends
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth() + 1;
-    
-    // Get last 12 months of data
-    const last12Months = [];
+    const grouped = await CvsaInspection.aggregate([
+      { $match: { ...match, date: { $ne: null } } },
+      {
+        $group: {
+          _id: { year: { $year: '$date' }, month: { $month: '$date' } },
+          totalInspections: { $sum: 1 },
+          passCount: { $sum: { $cond: [{ $eq: ['$status', 'pass'] }, 1, 0] } },
+          failCount: { $sum: { $cond: [{ $eq: ['$status', 'fail'] }, 1, 0] } },
+          warningCount: { $sum: { $cond: [{ $eq: ['$status', 'warning'] }, 1, 0] } },
+          outOfServiceCount: { $sum: { $cond: [{ $eq: ['$status', 'out-of-service'] }, 1, 0] } },
+          canadaInspections: { $sum: { $cond: [{ $eq: ['$country', 'canada'] }, 1, 0] } },
+          usaInspections: { $sum: { $cond: [{ $eq: ['$country', 'usa'] }, 1, 0] } }
+        }
+      },
+      { $sort: { '_id.year': -1, '_id.month': -1 } }
+    ]);
+
+    const rate = (part, total) => (total > 0 ? Math.round((part / total) * 100) : null);
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+    const monthlyData = [];
     for (let i = 0; i < 12; i++) {
-      const date = new Date(currentYear, currentMonth - 1 - i, 1);
-      const month = date.getMonth() + 1;
-      const year = date.getFullYear();
-      const record = records.find(r => r.year === year && r.month === month);
-      last12Months.unshift({
+      const d = new Date(Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth() + i, 1));
+      const year = d.getUTCFullYear();
+      const month = d.getUTCMonth() + 1;
+      const g = grouped.find((x) => x._id.year === year && x._id.month === month);
+      const totalInspections = g?.totalInspections || 0;
+      monthlyData.push({
         month,
         year,
-        monthName: date.toLocaleString('default', { month: 'long' }),
-        ...(record || {
-          totalInspections: 0,
-          passCount: 0,
-          failCount: 0,
-          warningCount: 0,
-          outOfServiceCount: 0,
-          canadaInspections: 0,
-          usaInspections: 0,
-          passRate: 0,
-          ossRate: 0
-        })
+        monthName: monthNames[month - 1],
+        totalInspections,
+        passCount: g?.passCount || 0,
+        failCount: g?.failCount || 0,
+        warningCount: g?.warningCount || 0,
+        outOfServiceCount: g?.outOfServiceCount || 0,
+        canadaInspections: g?.canadaInspections || 0,
+        usaInspections: g?.usaInspections || 0,
+        passRate: rate(g?.passCount || 0, totalInspections),
+        ossRate: rate(g?.outOfServiceCount || 0, totalInspections)
       });
     }
 
-    // Calculate overall statistics
-    const totalRecords = records.length;
-    const avgPassRate = totalRecords > 0 
-      ? Math.round(records.reduce((sum, r) => sum + (r.passRate || 0), 0) / totalRecords)
-      : 0;
-    const avgOssRate = totalRecords > 0
-      ? Math.round(records.reduce((sum, r) => sum + (r.ossRate || 0), 0) / totalRecords)
-      : 0;
+    // Pass rate over a set of months, weighted by number of inspections
+    const periodRate = (months) => {
+      const total = months.reduce((s, m) => s + m.totalInspections, 0);
+      return { total, passRate: rate(months.reduce((s, m) => s + m.passCount, 0), total) };
+    };
+    const recent = periodRate(monthlyData.slice(-3));
+    const previous = periodRate(monthlyData.slice(-6, -3));
+    const year = periodRate(monthlyData);
+    const yearOos = rate(monthlyData.reduce((s, m) => s + m.outOfServiceCount, 0), year.total);
 
-    // Calculate trend (comparing last 3 months vs previous 3 months)
-    const recent3Months = last12Months.slice(-3);
-    const previous3Months = last12Months.slice(-6, -3);
-    
-    const recentAvgPassRate = recent3Months.length > 0
-      ? Math.round(recent3Months.reduce((sum, m) => sum + (m.passRate || 0), 0) / recent3Months.length)
-      : 0;
-    const previousAvgPassRate = previous3Months.length > 0
-      ? Math.round(previous3Months.reduce((sum, m) => sum + (m.passRate || 0), 0) / previous3Months.length)
-      : 0;
+    const passRateTrend = recent.passRate !== null && previous.passRate !== null ? recent.passRate - previous.passRate : null;
 
-    const passRateTrend = recentAvgPassRate - previousAvgPassRate;
-    const isImproving = passRateTrend > 0;
-    const isDeclining = passRateTrend < 0;
-
-    // Get latest record
-    const latestRecord = records.length > 0 ? records[0] : null;
+    const latest = grouped[0];
+    const latestImportFilter = {};
+    if (!isSuperadmin) applyCompanyFilter(latestImportFilter, companyId);
+    const lastImport = await CarrierProfileImport.findOne(latestImportFilter).sort({ createdAt: -1 }).lean();
 
     res.json({
       success: true,
       data: {
-        records,
-        monthlyData: last12Months,
+        country: country || 'all',
+        monthlyData,
         summary: {
-          totalRecords,
-          avgPassRate,
-          avgOssRate,
-          latestRecord: latestRecord ? {
-            month: latestRecord.month,
-            year: latestRecord.year,
-            passRate: latestRecord.passRate,
-            ossRate: latestRecord.ossRate,
-            totalInspections: latestRecord.totalInspections,
-            safetyRating: latestRecord.safetyRating
-          } : null
+          totalRecords: monthlyData.filter((m) => m.totalInspections > 0).length,
+          totalInspections: year.total,
+          avgPassRate: year.passRate,
+          avgOssRate: yearOos,
+          latestRecord: latest
+            ? {
+                month: latest._id.month,
+                year: latest._id.year,
+                passRate: rate(latest.passCount, latest.totalInspections),
+                ossRate: rate(latest.outOfServiceCount, latest.totalInspections),
+                totalInspections: latest.totalInspections,
+                safetyRating: lastImport?.safetyRating || null
+              }
+            : null,
+          lastImport: lastImport
+            ? { fileName: lastImport.fileName, uploadedAt: lastImport.createdAt, period: lastImport.period, safetyRating: lastImport.safetyRating }
+            : null
         },
         trends: {
           passRateTrend,
-          isImproving,
-          isDeclining,
-          recentAvgPassRate,
-          previousAvgPassRate,
-          trendPercentage: previousAvgPassRate > 0 
-            ? Math.round((passRateTrend / previousAvgPassRate) * 100)
-            : 0
+          isImproving: passRateTrend !== null && passRateTrend > 0,
+          isDeclining: passRateTrend !== null && passRateTrend < 0,
+          recentAvgPassRate: recent.passRate,
+          recentInspections: recent.total,
+          previousAvgPassRate: previous.passRate,
+          previousInspections: previous.total,
+          trendPercentage: passRateTrend !== null && previous.passRate ? Math.round((passRateTrend / previous.passRate) * 100) : null
         }
       }
     });
