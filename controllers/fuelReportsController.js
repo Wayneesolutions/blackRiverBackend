@@ -12,6 +12,7 @@ import mongoose from "mongoose";
 import { extractFuelReceiptData } from "../services/openaiService.js";
 import fs from "fs";
 import { Trailer } from "../models/driver/trailerModel.js";
+import { parseCsv, parseNumber, parseFuelDate, detectDateOrder } from "../utils/fuelCsv.js";
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -1409,37 +1410,23 @@ export const parseCsvHeaders = async (req, res) => {
       });
     }
 
-    // Parse CSV
-    const csvText = fileBuffer.toString('utf-8');
-    const lines = csvText.split('\n').filter(line => line.trim());
-    
-    if (lines.length === 0) {
+    // Parse CSV (quoted cells may contain commas, e.g. "1,250.00")
+    const { headers, rows, delimiter } = parseCsv(fileBuffer.toString('utf-8'));
+
+    if (headers.length === 0) {
       return res.status(400).json({
         success: false,
         message: "CSV file is empty"
       });
     }
 
-    // Parse header row (handle both comma and semicolon delimiters)
-    const delimiter = csvText.includes(';') ? ';' : ',';
-    const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-    
-    // Get first few rows as sample data
-    const sampleRows = lines.slice(1, Math.min(6, lines.length)).map(line => {
-      const values = line.split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
-      return headers.reduce((obj, header, index) => {
-        obj[header] = values[index] || '';
-        return obj;
-      }, {});
-    });
-
     return res.status(200).json({
       success: true,
       message: "CSV parsed successfully",
       data: {
         headers,
-        sampleRows,
-        totalRows: lines.length - 1,
+        sampleRows: rows.slice(0, 5),
+        totalRows: rows.length,
         delimiter
       }
     });
@@ -1462,7 +1449,7 @@ export const importFuelReportsFromCsv = async (req, res) => {
       });
     }
 
-    const { columnMapping, defaultUnit, defaultCurrency = 'USA', defaultProduct } = req.body;
+    const { columnMapping, defaultUnit, defaultCurrency = 'USA', defaultProduct, dateFormat } = req.body;
     
     if (!columnMapping) {
       return res.status(400).json({
@@ -1508,20 +1495,16 @@ export const importFuelReportsFromCsv = async (req, res) => {
       });
     }
 
-    // Parse CSV
-    const csvText = fileBuffer.toString('utf-8');
-    const lines = csvText.split('\n').filter(line => line.trim());
-    
-    if (lines.length < 2) {
+    // Parse CSV (quoted cells may contain commas, e.g. "1,250.00")
+    const { rows: csvRows } = parseCsv(fileBuffer.toString('utf-8'));
+
+    if (csvRows.length < 1) {
       return res.status(400).json({
         success: false,
         message: "CSV file must have at least a header row and one data row"
       });
     }
 
-    const delimiter = csvText.includes(';') ? ';' : ',';
-    const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-    
     // Parse mapping (expecting JSON string or object)
     let mapping;
     try {
@@ -1536,25 +1519,31 @@ export const importFuelReportsFromCsv = async (req, res) => {
     const results = {
       success: 0,
       failed: 0,
-      errors: []
+      errors: [],
+      warnings: []
     };
 
-    // Process each row
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
+    // Slash dates: month-first or day-first? Look at the whole column first
+    // (13/11/2026 can only be day-first). The user's choice decides only when
+    // every date fits both.
+    const detectedOrder = mapping.date ? detectDateOrder(csvRows.map(r => r[mapping.date])) : null;
+    const chosenOrder = dateFormat === 'DMY' || dateFormat === 'MDY' ? dateFormat : null;
+    const dateOrder = detectedOrder || chosenOrder || 'MDY';
+    if (detectedOrder && chosenOrder && detectedOrder !== chosenOrder) {
+      results.warnings.push(`Dates were read as ${detectedOrder === 'DMY' ? 'DD/MM/YYYY' : 'MM/DD/YYYY'} because some dates only fit that format.`);
+    }
+
+    // Process each row (row numbers below match the spreadsheet: header is row 1)
+    for (let idx = 0; idx < csvRows.length; idx++) {
+      const i = idx + 1;
+      const rowData = csvRows[idx];
 
       try {
-        const values = line.split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
-        const rowData = headers.reduce((obj, header, index) => {
-          obj[header] = values[index] || '';
-          return obj;
-        }, {});
 
         // Map CSV columns to fuel report fields
         const dateValue = mapping.date ? rowData[mapping.date] : null;
-        const transactionAmountValue = mapping.transactionAmount ? parseFloat(rowData[mapping.transactionAmount]?.replace(/[^0-9.-]/g, '')) : null;
-        const fuelAmountValue = mapping.fuelAmount ? parseFloat(rowData[mapping.fuelAmount]?.replace(/[^0-9.-]/g, '')) : null;
+        const transactionAmountValue = mapping.transactionAmount ? parseNumber(rowData[mapping.transactionAmount]) : null;
+        const fuelAmountValue = mapping.fuelAmount ? parseNumber(rowData[mapping.fuelAmount]) : null;
         const transactionNumberValue = mapping.transactionNumber ? rowData[mapping.transactionNumber] : null;
         const fuelVendorValue = mapping.fuelVendor ? rowData[mapping.fuelVendor] : null;
         // A blank unit cell falls back to the Default Unit
@@ -1575,27 +1564,9 @@ export const importFuelReportsFromCsv = async (req, res) => {
           continue;
         }
 
-        // Parse date (handle various formats)
-        let parsedDate;
-        try {
-          const dateStr = dateValue.toString();
-          // Try common date formats
-          if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
-            parsedDate = new Date(dateStr);
-          } else if (dateStr.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
-            const [month, day, year] = dateStr.split('/');
-            parsedDate = new Date(`${year}-${month}-${day}`);
-          } else if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
-            const [month, day, year] = dateStr.split('-');
-            parsedDate = new Date(`${year}-${month}-${day}`);
-          } else {
-            parsedDate = new Date(dateStr);
-          }
-          
-          if (isNaN(parsedDate.getTime())) {
-            throw new Error('Invalid date format');
-          }
-        } catch (dateError) {
+        // Parse date to UTC midnight of that day
+        const parsedDate = parseFuelDate(dateValue, dateOrder);
+        if (!parsedDate) {
           results.failed++;
           results.errors.push(`Row ${i + 1}: Invalid date format: ${dateValue}`);
           continue;
@@ -1673,7 +1644,9 @@ export const importFuelReportsFromCsv = async (req, res) => {
       data: {
         success: results.success,
         failed: results.failed,
-        errors: results.errors.slice(0, 20) // Limit errors to first 20
+        errors: results.errors.slice(0, 20), // Limit errors to first 20
+        warnings: results.warnings,
+        dateFormat: dateOrder
       }
     });
   } catch (error) {
@@ -1848,10 +1821,9 @@ const parseEfsRows = (pdfRows) => {
     // Validate: must have a date-like string and some amount
     if (!trxDate || !/\d{1,2}\/\d{1,2}\/\d{4}/.test(trxDate)) continue;
 
-    // Parse date MM/DD/YYYY
-    const [month, day, year] = trxDate.split('/');
-    const parsedDate = new Date(`${year}-${month}-${day}`);
-    if (isNaN(parsedDate.getTime())) continue;
+    // Parse date MM/DD/YYYY (EFS/Comdata statements are month-first) to UTC midnight
+    const parsedDate = parseFuelDate(trxDate.match(/\d{1,2}\/\d{1,2}\/\d{4}/)[0], 'MDY');
+    if (!parsedDate) continue;
 
     const parseAmt = (s) => {
       const n = parseFloat((s || '').replace(/[^0-9.\-]/g, ''));
