@@ -153,6 +153,11 @@ export const searchContact = async (req, res) => {
     const { getCombinedFilter } = await import("../utils/trialDataFilter.js");
     
     const { name } = req.query;
+
+    // An empty search used to reach the regex below and fail with a 500
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ success: false, message: "Please enter a name to search", data: [] });
+    }
     
     // Get company filter
     const userCompanyId = getUserCompanyId(req.user);
@@ -174,13 +179,14 @@ export const searchContact = async (req, res) => {
     // Build query
     const query = {
       role: 'contact',
-      name: { $regex: name, $options: "i" }
+      // Escape regex characters so input like "(" doesn't throw
+      name: { $regex: String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: "i" }
     };
     if (baseFilter) {
       Object.assign(query, baseFilter);
     }
     
-    const contacts = await User.find(query);
+    const contacts = await User.find(query).select('-password');
     res.json({ success: true, data: contacts });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

@@ -58,6 +58,24 @@ export const connectDB = async () => {
       }
     }
     
+    // Rebuild internalId_1_company_1 as a partial index (it used to be `sparse`, which still
+    // indexed staff with no internalId as null, so only one staff member per company could be added)
+    try {
+      const { User } = await import('../models/driver/userModel.js');
+      const existing = await User.collection.listIndexes().toArray();
+      const old = existing.find((ix) => ix.name === 'internalId_1_company_1');
+      if (old && !old.partialFilterExpression) {
+        await User.collection.dropIndex('internalId_1_company_1');
+        await User.collection.createIndex(
+          { internalId: 1, company: 1 },
+          { name: 'internalId_1_company_1', unique: true, partialFilterExpression: { internalId: { $type: 'string' } } }
+        );
+        console.log('✅ Rebuilt internalId_1_company_1 as a partial unique index');
+      }
+    } catch (indexErr) {
+      console.warn('⚠️ Could not rebuild internalId_1_company_1 index:', indexErr.message);
+    }
+
     // Drop obsolete settlementId_1 index if it exists (fixes E11000 duplicate key error for settlements)
     try {
       const { Settlement } = await import('../models/hr/settlementModel.js');

@@ -314,7 +314,7 @@ adminRoute.delete('/shift/:id',authMiddleware,
 adminRoute.post(
   '/company',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accounts', 'accountant', 'driver', 'safety officer'),
+  authorizeRoles('admin', 'superadmin'), // only the company Admin may change company settings
   FileUpload.single('file'),
   upsertCompanySettings
 )

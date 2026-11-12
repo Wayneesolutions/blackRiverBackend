@@ -295,6 +295,12 @@ const userSchema = new mongoose.Schema({
   strict: true // Only save fields defined in schema
 });
 
-userSchema.index({ internalId: 1, company: 1 }, { unique: true, sparse: true });
+// Employee/driver IDs must be unique within a company. Only index users that actually have an
+// internalId: `sparse` does not skip compound indexes when `company` is set, so every staff
+// member without an ID collided on null and a company could only ever add one staff member.
+userSchema.index(
+  { internalId: 1, company: 1 },
+  { unique: true, partialFilterExpression: { internalId: { $type: 'string' } } }
+);
 
 export const User = mongoose.model('User', userSchema);

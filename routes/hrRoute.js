@@ -1193,7 +1193,8 @@ hrRoute.get(
 hrRoute.get(
   '/driver',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  // safety officer: driver pickers on Hazards Management and Trucking Operations
+  authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer'),
   async (req, res) => {
     try {
       const { page = 1, limit = 100, search, status } = req.query;

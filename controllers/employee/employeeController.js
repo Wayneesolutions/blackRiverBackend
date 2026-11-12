@@ -661,8 +661,8 @@ export const createEmployee = async (req, res) => {
             console.error('Error fetching deductions/additions:', fetchError);
         }
 
-        // Fetch employee again to get all fields
-        const savedEmployee = await User.findById(employeeId).lean();
+        // Fetch employee again to get all fields (never send the password hash or PIN back)
+        const savedEmployee = await User.findById(employeeId).select('-password -pin').lean();
 
         res.status(201).json({
             success: true,

@@ -30,9 +30,10 @@ export const getPlaceTextSearch = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
@@ -220,9 +221,10 @@ export const getPlaceAutocomplete = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
@@ -429,9 +431,10 @@ export const getPlaceDetails = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
