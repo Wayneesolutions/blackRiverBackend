@@ -11,7 +11,10 @@ const invoiceItemSchema = new mongoose.Schema({
   productService: { type: String, required: false }, // e.g. "service:<id>" or "repair:<id>"
   description: { type: String, required: true }, // Required: description of service/maintenance/part
   
-  quantity: { type: Number, required: true, min: 1 },
+  // part / labour / service, so the invoice can list several parts and several labour lines
+  itemType: { type: String, enum: ['part', 'labour', 'service', 'item'], default: 'item' },
+  productName: { type: String, required: false }, // e.g. "Rotella engine oil", shown in the Product column
+  quantity: { type: Number, required: true, min: 0 }, // labour hours can be 1.5, 0.25, ...
   unitPrice: { type: Number, required: true, min: 0 }, // Also called "rate"
   totalPrice: { type: Number, required: true, min: 0 }, // quantity * unitPrice
   taxId: { type: String, required: false }, // Tax option id (e.g. "gst", "pst", "custom-xxx")
@@ -43,6 +46,11 @@ const fleetInvoiceSchema = new mongoose.Schema(
     status: { type: String, enum: ['draft', 'sent', 'paid', 'cancelled', 'overdue'], default: 'draft' },
     dueDate: { type: Date, required: true },
     messageOnInvoice: { type: String, required: false }, // Message shown on invoice
+    // Unit the work was done on (printed on the invoice like the client's Rosser sample)
+    unitNumber: { type: String, required: false },
+    unitMakeModel: { type: String, required: false },
+    unitVin: { type: String, required: false },
+    unitOdometer: { type: String, required: false }, // current KM / hours, as entered
     notes: { type: String },
     company: {
       type: mongoose.Schema.Types.ObjectId,
