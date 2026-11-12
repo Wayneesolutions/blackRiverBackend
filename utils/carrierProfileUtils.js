@@ -276,3 +276,119 @@ export function normalizeSafetyRating(value) {
   if (v.startsWith('sat') || v.includes('excellent')) return 'Satisfactory';
   return clean(value);
 }
+
+// ─── US FMCSA SMS carrier profiles ──────────────────────────────────────────
+// The USA profile (FMCSA SMS "Inspection History") is a different document from the
+// Canadian NSC carrier profile: dates are printed MONTH first (9/3/2026 = Sept 3), and there
+// is no Pass/Fail column — the result has to come from the violations listed under each
+// inspection. It also has a clean text layer, so it is parsed directly instead of by AI.
+
+/** True when the PDF text layer looks like an FMCSA SMS profile. */
+export const isFmcsaSmsProfile = (text) =>
+  typeof text === 'string' && /U\.S\. DOT#/i.test(text) && /INSPECTION HISTORY/i.test(text);
+
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+/** "9/3/2026" (US, month first) → "2026-09-03" */
+const parseUsDate = (value) => {
+  const m = clean(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const month = +m[1];
+  const day = +m[2];
+  const year = +m[3];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+/**
+ * Inspection result for an SMS row: any out-of-service violation → OOS; any other
+ * violation → warning (violations noted, vehicle not put out of service); none → pass.
+ */
+const smsStatus = (violations) => {
+  if (violations.some((v) => v.oos)) return 'out-of-service';
+  if (violations.length > 0) return 'warning';
+  return 'pass';
+};
+
+/**
+ * Parses the pdf.js text layer of an FMCSA SMS profile (cells joined with " | ") into the
+ * same raw shape the AI extraction returns, so it can go through normalizeCarrierProfileExtraction.
+ */
+export const parseFmcsaSmsProfile = (text) => {
+  const lines = String(text || '').split('\n').map((l) => l.trim());
+  const inspections = [];
+  let current = null;
+  let lastViolation = null;
+  let inHistory = false;
+
+  const rowRe = /^(\d{1,2}\/\d{1,2}\/\d{4}) \| ([A-Z0-9]+) \| ([A-Z]{2}) \| ([^|]+?) \| ([A-Z]{2}) \| ([^|]+?)(?: \| \d+)?$/;
+  const violationRe = /^(.+?) Violation: \| (\S+) (.+?) \| (\d+)(?: \+ (\d+) \(OOS\))?$/;
+
+  for (const line of lines) {
+    if (!line) continue;
+    if (/^INSPECTION HISTORY/i.test(line)) { inHistory = true; continue; }
+    if (!inHistory) continue;
+    if (/^Summary of Activities/i.test(line)) break;
+    // Repeated column headers / page markers
+    if (/^--- Page/.test(line) || /^Report \|/.test(line) || /^Severity \|/.test(line) || /^Inspection Date \|/.test(line) || /^\(SW\)/.test(line)) continue;
+
+    const row = line.match(rowRe);
+    if (row) {
+      current = {
+        reportNumber: row[2],
+        date: parseUsDate(row[1]),
+        state: row[3],
+        location: `${row[3]}, USA`,
+        vehicleUnitNo: clean(row[4]),
+        notes: `Plate state: ${row[5]} · Vehicle: ${clean(row[6])}`,
+        violations: []
+      };
+      inspections.push(current);
+      lastViolation = null;
+      continue;
+    }
+
+    const viol = line.match(violationRe);
+    if (viol && current) {
+      const oos = !!viol[5] || /\(OOS\)/.test(viol[3]);
+      const weight = Number(viol[4]) || 0;
+      lastViolation = {
+        code: viol[2],
+        description: `${clean(viol[1])}: ${clean(viol[3])}`,
+        severity: oos ? 'critical' : weight >= 7 ? 'major' : 'minor',
+        oos
+      };
+      current.violations.push(lastViolation);
+      continue;
+    }
+
+    // Wrapped description text belongs to the previous violation
+    if (lastViolation && !line.includes(' | ')) {
+      lastViolation.description = `${lastViolation.description} ${line}`;
+    }
+  }
+
+  for (const row of inspections) {
+    row.result = smsStatus(row.violations);
+    row.violations = row.violations.map(({ code, description, severity }) => ({ code, description, severity }));
+  }
+
+  const usdot = (String(text).match(/U\.S\. DOT#:?\s*\|?\s*(\d+)/i) || [])[1] || null;
+  const nameLine = lines.findIndex((l) => /U\.S\. DOT#/i.test(l));
+  const carrierName = nameLine > 0 ? clean(lines[nameLine - 1].split(' | ')[0]) : null;
+  const total = (String(text).match(/Total Inspections:\s*\|?\s*(\d+)/i) || [])[1];
+  const ending = String(text).match(/record ending (\w+) (\d{1,2}), (\d{4})/i);
+  const periodEnd = ending && MONTH_NAMES.includes(ending[1].toLowerCase())
+    ? `${ending[3]}-${String(MONTH_NAMES.indexOf(ending[1].toLowerCase()) + 1).padStart(2, '0')}-${String(+ending[2]).padStart(2, '0')}`
+    : null;
+
+  return {
+    carrier: { name: carrierName, usdotNumber: usdot, safetyRating: null },
+    period: { start: null, end: periodEnd },
+    inspections,
+    summary: {
+      totalInspections: total ? Number(total) : null,
+      period: ending ? `24-month record ending ${ending[1]} ${ending[2]}, ${ending[3]}` : null
+    }
+  };
+};

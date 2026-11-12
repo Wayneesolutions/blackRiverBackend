@@ -1,3 +1,4 @@
+import { isFmcsaSmsProfile, parseFmcsaSmsProfile } from '../utils/carrierProfileUtils.js';
 import axios from 'axios';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
@@ -1819,6 +1820,17 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
     if (isPDF) {
       pdfText = await extractPdfTableText(fileBuffer);
       console.log(`📄 PDF text layer: ${pdfText.length} characters`);
+
+      // US FMCSA SMS profiles have a reliable text layer and a fixed layout (month-first dates,
+      // no Pass/Fail column), so read them directly instead of sending them to the AI.
+      if (isFmcsaSmsProfile(pdfText)) {
+        const parsed = parseFmcsaSmsProfile(pdfText);
+        if (parsed.inspections.length > 0) {
+          console.log(`✅ FMCSA SMS profile parsed directly: ${parsed.inspections.length} inspection(s)`);
+          return { success: true, data: parsed };
+        }
+        console.warn('⚠️ Looked like an FMCSA SMS profile but no rows were parsed; falling back to AI extraction');
+      }
       try {
         console.log('📄 Converting PDF to images for AI processing (all pages)...');
         imageBuffers = await convertPdfBufferToImages(fileBuffer); // Convert all pages
