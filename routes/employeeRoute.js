@@ -21,6 +21,7 @@ import {
 } from "../validations/employee/employee.validation.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { authorizeRoles } from "../middleware/authRoles.js";
+import { redactSensitiveFields } from "../middleware/redactSensitiveFields.js";
 import { FileUpload, FileUploadMemory } from "../middleware/upload.js";
 const employeeRoute = express.Router();
 
@@ -53,6 +54,7 @@ employeeRoute.get(
     "/",
     authMiddleware,
     authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'accountant', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
+    redactSensitiveFields, // SIN, DOB, pay etc. only for admin/HR/accounting
     getAllEmployees
 );
 
@@ -69,6 +71,7 @@ employeeRoute.get(
     "/:id",
     authMiddleware,
     authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'accountant', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
+    redactSensitiveFields, // SIN, DOB, pay etc. only for admin/HR/accounting
     getEmployeeById
 );
 

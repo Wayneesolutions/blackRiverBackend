@@ -53,6 +53,38 @@ const checkMimeType = (req, file, cb) => {
   }
 };
 
+
+// Browsers send UTF-8 file names but multer/busboy reads them as latin1, so "–" or Punjabi
+// text arrives garbled. Fix the name once, and keep S3 keys and metadata ASCII-only:
+// S3 user metadata is sent as HTTP headers, and any non-ASCII character there makes the
+// upload throw (500 "Something went wrong").
+const fixOriginalName = (file) => {
+  if (!file || file._nameFixed) return file?.originalname || '';
+  try {
+    const raw = file.originalname || '';
+    // Only re-decode when the name looks like latin1-read UTF-8 (all chars <= 0xFF, some > 0x7F)
+    if (/[\x80-\xFF]/.test(raw) && !/[^\x00-\xFF]/.test(raw)) {
+      const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+      if (!decoded.includes('\uFFFD')) file.originalname = decoded;
+    }
+  } catch (e) { /* keep the name as received */ }
+  file._nameFixed = true;
+  return file.originalname || '';
+};
+const keySafeName = (name) => {
+  const clean = (v) => String(v || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  const str = String(name || '');
+  const dot = str.lastIndexOf('.');
+  const base = clean(dot > 0 ? str.slice(0, dot) : str) || 'file';
+  const ext = dot > 0 ? clean(str.slice(dot + 1)).toLowerCase() : '';
+  return ext ? `${base}.${ext}` : base;
+};
+
 // ✅ Local storage (for dev)
 const localStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -74,7 +106,7 @@ const localStorage = multer.diskStorage({
     cb(null, folder);
   },
   filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
+    cb(null, `${Date.now()}-${keySafeName(fixOriginalName(file))}`);
   },
 });
 
@@ -99,7 +131,7 @@ const s3Storage = multerS3({
       folder = "documents";
     }
 
-    const s3Key = `${folder}/${Date.now()}-${file.originalname}`;
+    const s3Key = `${folder}/${Date.now()}-${keySafeName(fixOriginalName(file))}`;
     
     // ✅ Log upload details BEFORE upload
     console.log("=========================================");
@@ -119,7 +151,7 @@ const s3Storage = multerS3({
   metadata: (req, file, cb) => {
     cb(null, {
       fieldName: file.fieldname,
-      originalName: file.originalname,
+      originalName: encodeURIComponent(fixOriginalName(file)), // headers must be ASCII
       uploadedAt: new Date().toISOString()
     });
   },
