@@ -11,6 +11,7 @@ import {
 import { FileUpload, FileUploadMemory, CsvUploadMemory } from '../middleware/upload.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { authorizeRoles } from '../middleware/authRoles.js'
+import { redactSensitiveFields } from '../middleware/redactSensitiveFields.js'
 import { checkTrialAccess } from '../middleware/checkTrial.js'
 import {
   getRevenuePerMile,
@@ -661,6 +662,7 @@ dispatcherRoute.get(
   '/driver',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accountant', 'safety officer', 'Maintenance Crew (Mechanics)'),
+  redactSensitiveFields, // SIN, DOB, pay etc. only for admin/HR/accounting
   getAllDrivers
 )
 dispatcherRoute.post(

@@ -5,6 +5,10 @@ import { CompanySettings } from "../../models/driver/companysettingsModel.js";
 import { sendInvoiceEmail } from "../../services/emailService.js";
 import { extractFleetInvoiceData } from "../../services/openaiService.js";
 
+// Money is stored in cents precision: each line amount and each line tax is rounded half-up,
+// so the form, the PDF, the list and the stored total always agree (no $10,862.775).
+const toCents = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
 // Get invoice summary (paid, unpaid, overdue amounts)
 export const getFleetInvoiceSummary = async (req, res) => {
   try {
@@ -297,12 +301,12 @@ export const createFleetInvoice = async (req, res) => {
     const processedItems = items.map((item) => {
       const quantity = Number(item.quantity ?? item.qty ?? 1) || 0; // decimals allowed (labour hours)
       const unitPrice = Number(item.unitPrice || item.rate || 0);
-      const totalPrice = quantity * unitPrice;
+      const totalPrice = toCents(quantity * unitPrice);
       subtotal += totalPrice;
 
       // Calculate tax for this item
       const taxPercent = Number(item.taxPercent || 0);
-      const itemTax = totalPrice * (taxPercent / 100);
+      const itemTax = toCents(totalPrice * (taxPercent / 100));
       totalTaxAmount += itemTax;
 
       return {
@@ -330,15 +334,15 @@ export const createFleetInvoice = async (req, res) => {
     // Process labour charges (outside line items)
     const labourHours = Number(req.body.labourHours || 0);
     const labourRate = Number(req.body.labourRate || 0);
-    const labourAmount = labourHours * labourRate;
+    const labourAmount = toCents(labourHours * labourRate);
     const labourTaxPercent = Number(req.body.labourTaxPercent || 0);
-    const labourTaxAmount = labourAmount * (labourTaxPercent / 100);
+    const labourTaxAmount = toCents(labourAmount * (labourTaxPercent / 100));
 
     // Calculate totals: subtotal includes items + labour, tax includes items tax + labour tax
     const itemsSubtotal = subtotal; // Items subtotal
-    const finalSubtotal = itemsSubtotal + labourAmount; // Items + Labour
-    const finalTaxAmount = totalTaxAmount + labourTaxAmount; // Items tax + Labour tax
-    const total = finalSubtotal + finalTaxAmount;
+    const finalSubtotal = toCents(itemsSubtotal + labourAmount); // Items + Labour
+    const finalTaxAmount = toCents(totalTaxAmount + labourTaxAmount); // Items tax + Labour tax
+    const total = toCents(finalSubtotal + finalTaxAmount);
 
     const invoiceData = {
       invoiceNumber,
@@ -414,12 +418,12 @@ export const updateFleetInvoice = async (req, res) => {
       const processedItems = req.body.items.map((item) => {
         const quantity = Number(item.quantity ?? item.qty ?? 1) || 0; // decimals allowed (labour hours)
         const unitPrice = Number(item.unitPrice || item.rate || 0);
-        const totalPrice = quantity * unitPrice;
+        const totalPrice = toCents(quantity * unitPrice);
         subtotal += totalPrice;
 
         // Calculate tax for this item
         const taxPercent = Number(item.taxPercent || 0);
-        const itemTax = totalPrice * (taxPercent / 100);
+        const itemTax = toCents(totalPrice * (taxPercent / 100));
         totalTaxAmount += itemTax;
 
         return {
@@ -443,15 +447,15 @@ export const updateFleetInvoice = async (req, res) => {
       // Process labour charges (outside line items)
       const labourHours = Number(req.body.labourHours || 0);
       const labourRate = Number(req.body.labourRate || 0);
-      const labourAmount = labourHours * labourRate;
+      const labourAmount = toCents(labourHours * labourRate);
       const labourTaxPercent = Number(req.body.labourTaxPercent || 0);
-      const labourTaxAmount = labourAmount * (labourTaxPercent / 100);
+      const labourTaxAmount = toCents(labourAmount * (labourTaxPercent / 100));
 
       // Calculate totals: subtotal includes items + labour, tax includes items tax + labour tax
       const itemsSubtotal = subtotal; // Items subtotal
-      const finalSubtotal = itemsSubtotal + labourAmount; // Items + Labour
-      const finalTaxAmount = totalTaxAmount + labourTaxAmount; // Items tax + Labour tax
-      const total = finalSubtotal + finalTaxAmount;
+      const finalSubtotal = toCents(itemsSubtotal + labourAmount); // Items + Labour
+      const finalTaxAmount = toCents(totalTaxAmount + labourTaxAmount); // Items tax + Labour tax
+      const total = toCents(finalSubtotal + finalTaxAmount);
       
       req.body.items = processedItems;
       req.body.subtotal = finalSubtotal;

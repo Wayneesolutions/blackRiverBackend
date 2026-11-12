@@ -1,5 +1,6 @@
 import { Inspection } from "../../models/healthSafety/inspectionModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { withViewUrls } from "../../utils/s3SignedUrl.js";
 
 // ✅ Create Inspection
 export const createInspection = async (req, res) => {
@@ -132,11 +133,12 @@ export const getInspections = async (req, res) => {
       .lean();
 
     // Add counts to each inspection for frontend display
-    const inspectionsWithCounts = inspections.map(inspection => ({
+    const inspectionsWithCounts = await Promise.all(inspections.map(async (inspection) => ({
       ...inspection,
       findings: Array.isArray(inspection.findings) ? inspection.findings.length : 0,
-      hazards: Array.isArray(inspection.hazards) ? inspection.hazards.length : 0
-    }));
+      hazards: Array.isArray(inspection.hazards) ? inspection.hazards.length : 0,
+      documents: await withViewUrls(inspection.documents) // bucket is private: give the browser signed links
+    })));
 
     res.json({
       success: true,
@@ -177,6 +179,7 @@ export const getInspectionById = async (req, res) => {
     // Add counts for frontend display
     inspection.findings = Array.isArray(inspection.findings) ? inspection.findings.length : 0;
     inspection.hazards = Array.isArray(inspection.hazards) ? inspection.hazards.length : 0;
+    inspection.documents = await withViewUrls(inspection.documents);
 
     res.json({
       success: true,
@@ -331,7 +334,9 @@ export const completeInspection = async (req, res) => {
     await inspection.save();
     await inspection.populate('createdBy', 'name email');
 
-    res.json({ success: true, message: "Inspection marked as complete", data: inspection });
+    const data = inspection.toObject();
+    data.documents = await withViewUrls(data.documents);
+    res.json({ success: true, message: "Inspection marked as complete", data });
   } catch (err) {
     console.error('Complete inspection error:', err);
     res.status(500).json({ success: false, message: err.message || "Failed to complete inspection" });
@@ -351,7 +356,9 @@ export const uploadInspectionDocuments = async (req, res) => {
     }
     inspection.documents.push(...docs);
     await inspection.save();
-    res.json({ success: true, message: `${docs.length} file(s) uploaded`, data: inspection });
+    const data = inspection.toObject();
+    data.documents = await withViewUrls(data.documents);
+    res.json({ success: true, message: `${docs.length} file(s) uploaded`, data });
   } catch (err) {
     console.error('Upload inspection documents error:', err);
     res.status(500).json({ success: false, message: err.message || "Failed to upload files" });
@@ -371,7 +378,9 @@ export const deleteInspectionDocument = async (req, res) => {
       return res.status(404).json({ success: false, message: "Document not found" });
     }
     await inspection.save();
-    res.json({ success: true, message: "Document removed", data: inspection });
+    const data = inspection.toObject();
+    data.documents = await withViewUrls(data.documents);
+    res.json({ success: true, message: "Document removed", data });
   } catch (err) {
     console.error('Delete inspection document error:', err);
     res.status(500).json({ success: false, message: err.message || "Failed to remove document" });

@@ -2,6 +2,7 @@ import express from 'express';
 import { scopeTrainingRole } from '../middleware/trainingRoleScope.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/authRoles.js';
+import { redactSensitiveFields } from '../middleware/redactSensitiveFields.js';
 import { FileUpload, FileUploadMemory, TrainingUpload, logFileUpload } from '../middleware/upload.js';
 import { User } from '../models/driver/userModel.js';
 import { getUserCompanyId } from '../utils/companyFilter.js';
@@ -1195,6 +1196,7 @@ hrRoute.get(
   authMiddleware,
   // safety officer: driver pickers on Hazards Management and Trucking Operations
   authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager', 'safety officer'),
+  redactSensitiveFields, // SIN, DOB, pay etc. only for admin/HR/accounting
   async (req, res) => {
     try {
       const { page = 1, limit = 100, search, status } = req.query;
@@ -1834,6 +1836,7 @@ hrRoute.get(
   '/driver/:id',
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  redactSensitiveFields, // SIN, DOB, pay etc. only for admin/HR/accounting
   getDriverById
 );
 
