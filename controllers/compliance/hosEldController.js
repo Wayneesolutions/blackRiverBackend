@@ -1235,7 +1235,7 @@ export const createHosAuditForm = async (req, res) => {
     const auditDateObj = new Date(auditDate);
     // multipart sends booleans as strings. Also treat "ELD malfunction" typed in the corrective
     // action comments / type as a malfunction, since that's how the paper form records it.
-    const mentionsMalfunction = (v) => typeof v === 'string' && /eld\s*malfunction/i.test(v);
+    const mentionsMalfunction = (v) => typeof v === 'string' && /\beld\b[\s-]*mal/i.test(v);
     const isEldMalfunction = eldMalfunction === true || eldMalfunction === 'true' ||
       mentionsMalfunction(correctiveActionComments) || mentionsMalfunction(correctiveActionType);
     const payload = {
