@@ -51,6 +51,24 @@ const inspectionSchema = new mongoose.Schema({
   notes: { type: String },
   scheduledDate: { type: Date },
   completedDate: { type: Date },
+  // Completion details (filled when the inspection is marked complete)
+  completedBy: { type: String, trim: true },
+  result: {
+    type: String,
+    enum: ['pass', 'fail', 'action-required', null],
+    default: null
+  },
+  completionNotes: { type: String },
+  // Filled-in inspection forms / photos uploaded for this inspection
+  documents: [{
+    name: { type: String },
+    url: { type: String },
+    key: { type: String },
+    mimeType: { type: String },
+    size: { type: Number },
+    uploadedAt: { type: Date, default: Date.now },
+    uploadedBy: { type: String }
+  }],
   company: { type: mongoose.Schema.Types.ObjectId, ref: "CompanySettings", required: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
 }, {

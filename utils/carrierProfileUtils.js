@@ -15,6 +15,17 @@ const CANADA_NAMES = {
   ontario: 'ON', 'prince edward island': 'PE', quebec: 'QC', 'québec': 'QC', saskatchewan: 'SK', yukon: 'YT'
 };
 
+const USA_NAMES = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO', connecticut: 'CT',
+  delaware: 'DE', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA',
+  kansas: 'KS', kentucky: 'KY', louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI',
+  minnesota: 'MN', mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH',
+  'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH',
+  oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD',
+  tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT', virginia: 'VA', washington: 'WA', 'west virginia': 'WV',
+  wisconsin: 'WI', wyoming: 'WY', 'district of columbia': 'DC'
+};
+
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 const clean = (v) => (v === undefined || v === null ? '' : String(v).trim());
@@ -28,6 +39,7 @@ export const resolveJurisdiction = (value) => {
   if (USA_CODES.includes(upper)) return { code: upper, country: 'usa' };
   const lower = raw.toLowerCase();
   if (CANADA_NAMES[lower]) return { code: CANADA_NAMES[lower], country: 'canada' };
+  if (USA_NAMES[lower]) return { code: USA_NAMES[lower], country: 'usa' };
   return null;
 };
 
@@ -51,6 +63,11 @@ const countryFromLocation = (location) => {
     return 'canada';
   }
   if (/\b(usa|u\.s\.a\.|united states)\b/.test(lower)) return 'usa';
+  // Full US state names ("Texas", "North Dakota"). Checked after Canadian names so
+  // "New Brunswick" etc. still resolve to Canada; word boundaries avoid partial matches.
+  for (const name of Object.keys(USA_NAMES)) {
+    if (new RegExp(`\\b${name}\\b`).test(lower)) return 'usa';
+  }
   return null;
 };
 

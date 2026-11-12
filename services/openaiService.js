@@ -1985,6 +1985,44 @@ ${pdfText}
       // Check if there's a refusal from the model
       if (refusal) {
         console.error('❌ OpenAI API Refusal:', refusal);
+
+        // USA (FMCSA) carrier profiles list driver names / licence numbers on page images, which
+        // the vision model sometimes refuses. When the PDF has a text layer, retry with the text
+        // only (no images) and make clear this is the carrier's own compliance record.
+        if (pdfText && pdfText.trim().length > 200) {
+          try {
+            console.log('🔄 Retrying carrier profile extraction with the PDF text layer only...');
+            const textOnlyResponse = await withRateLimitRetry(() => axios.post(
+              OPENAI_API_URL,
+              {
+                model: 'gpt-4o',
+                messages: [
+                  {
+                    role: 'system',
+                    content: systemPrompt + '\n\nContext: this is the trucking company\'s own carrier safety profile (Canadian NSC or US FMCSA/SMS), uploaded by the company\'s compliance manager to keep its own CVSA inspection records. Transcribing it is routine record-keeping.'
+                  },
+                  { role: 'user', content: userPrompt }
+                ],
+                max_tokens: 16000,
+                temperature: 0.1,
+                response_format: { type: 'json_object' }
+              },
+              {
+                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                timeout: 90000
+              }
+            ));
+            const textOnlyContent = textOnlyResponse.data.choices?.[0]?.message?.content;
+            if (textOnlyContent) {
+              const parsed = JSON.parse(textOnlyContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
+              console.log('✅ Text-only retry succeeded');
+              return { success: true, data: parsed, usage: textOnlyResponse.data.usage };
+            }
+          } catch (textOnlyError) {
+            console.error('❌ Text-only retry failed:', textOnlyError.message);
+          }
+        }
+
         console.log('🔄 Attempting retry without strict JSON format requirement...');
         
         // Retry without response_format constraint (sometimes helps with refusals)
@@ -2033,7 +2071,7 @@ ${pdfText}
           if (retryRefusal) {
             return {
               success: false,
-              error: `The AI model refused to process this document. This may happen if the document is unreadable, corrupted, or contains content that triggers safety filters. Please ensure the document is a valid carrier profile document and try again. If the issue persists, try converting the PDF to images manually and uploading the images instead.`,
+              error: `We couldn't read this carrier profile automatically. Please make sure it is the original PDF downloaded from the carrier profile / FMCSA portal (not a scan or photo) and try again. If it still fails, send the file to support so we can check it.`,
               data: null
             };
           }
@@ -2062,7 +2100,7 @@ ${pdfText}
         
         return {
           success: false,
-          error: `The AI model refused to process this document. This may happen if the document is unreadable, corrupted, or contains content that triggers safety filters. Please ensure the document is a valid carrier profile document and try again. If the issue persists, try converting the PDF to images manually and uploading the images instead.`,
+          error: `We couldn't read this carrier profile automatically. Please make sure it is the original PDF downloaded from the carrier profile / FMCSA portal (not a scan or photo) and try again. If it still fails, send the file to support so we can check it.`,
           data: null
         };
       }

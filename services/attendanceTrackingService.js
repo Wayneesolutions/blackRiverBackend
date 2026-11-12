@@ -190,8 +190,16 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
     attendanceDate.setHours(0, 0, 0, 0);
     
     const checkInTime = loginTime.toTimeString().slice(0, 5); // HH:mm format
-    const checkOutTime = now.toTimeString().slice(0, 5); // HH:mm format
-    const totalHours = activeMinutes / 60;
+    // The attendance record belongs to the login day. If the session ran past midnight
+    // (logout days later, day-boundary job missed), only credit time up to the end of
+    // that day — otherwise a 3-day-old session shows up as "73 hrs" in one day.
+    const endOfLoginDay = new Date(attendanceDate);
+    endOfLoginDay.setHours(23, 59, 59, 999);
+    const sessionCrossedMidnight = now > endOfLoginDay;
+    const minutesUntilEndOfDay = Math.max(0, (endOfLoginDay - loginTime) / (1000 * 60));
+    const creditedMinutes = Math.min(activeMinutes, minutesUntilEndOfDay);
+    const checkOutTime = sessionCrossedMidnight ? '23:59' : now.toTimeString().slice(0, 5); // HH:mm format
+    const totalHours = creditedMinutes / 60;
 
     // Always mark as "present" for auto-tracked attendance from login
     // No need to mark as "late" - all logins are treated as present
@@ -273,7 +281,7 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
         // Add the new session hours to existing
         existingAttendance.checkIn = earliestCheckIn;
         existingAttendance.checkOut = latestCheckOut;
-        existingAttendance.totalHours = (existingAttendance.totalHours || 0) + totalHours;
+        existingAttendance.totalHours = Math.min(24, (existingAttendance.totalHours || 0) + totalHours);
       }
       
       // Don't override status if it's manually set to absent or leave

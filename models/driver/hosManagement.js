@@ -22,6 +22,8 @@ const hosLogSchema = new mongoose.Schema({
   auditorName: { type: String },
   auditedAt: { type: Date },
   auditViolations: [{ type: String }],
+  // ELD malfunction recorded through an HOS audit form: shown in the tracker, never as a violation
+  eldMalfunction: { type: Boolean, default: false },
   // Company association for data isolation
   company: { 
     type: mongoose.Schema.Types.ObjectId, 

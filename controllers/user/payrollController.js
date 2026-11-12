@@ -166,7 +166,7 @@ export const createPayroll = async (req, res) => {
 
       // Calculate hours and days from attendance
       attendanceRecords.forEach(record => {
-        const hours = record.totalHours || 0;
+        const hours = Math.min(record.totalHours || 0, 24); // one attendance day is never more than 24h
         
         if (record.status === 'present' || record.status === 'late') {
           // Treat late as present
@@ -1162,7 +1162,7 @@ export const updatePayroll = async (req, res) => {
 
         // Calculate hours and days from attendance
         attendanceRecords.forEach(record => {
-          const hours = record.totalHours || 0;
+          const hours = Math.min(record.totalHours || 0, 24); // one attendance day is never more than 24h
           
           if (record.status === 'present' || record.status === 'late') {
             // Treat late as present

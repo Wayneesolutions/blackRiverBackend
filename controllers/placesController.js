@@ -39,9 +39,12 @@ export const getPlaceTextSearch = async (req, res) => {
     // Build Text Search API URL
     let textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query.trim())}&key=${googleMapsApiKey}`;
     
-    // Add location bias for better results
+    // Add location bias for better results. With no explicit bias, default to Canada,
+    // since the fleet operates in Canada/USA (otherwise e.g. "Headingley" resolves to Leeds, UK).
     if (location) {
       textSearchUrl += `&location=${encodeURIComponent(location)}`;
+    } else {
+      textSearchUrl += `&region=ca`;
     }
     
     // Add radius if provided
@@ -279,7 +282,7 @@ export const getPlaceAutocomplete = async (req, res) => {
       
       try {
         // Import the text search function (or call it directly)
-        const textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(originalInput)}&key=${googleMapsApiKey}&type=address`;
+        const textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(originalInput)}&key=${googleMapsApiKey}&type=address&region=ca`;
         
         const textSearchResponse = await fetch(textSearchUrl);
         if (textSearchResponse.ok) {

@@ -55,7 +55,10 @@ import {
   getInspections,
   getInspectionById,
   updateInspection,
-  deleteInspection
+  deleteInspection,
+  completeInspection,
+  uploadInspectionDocuments,
+  deleteInspectionDocument
 } from '../controllers/healthSafety/inspectionController.js';
 
 // Hazard controllers
@@ -383,6 +386,31 @@ healthSafetyRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'safety officer'),
   deleteInspection
+);
+
+// Mark an inspection complete (result, notes, filled-in forms as `documents`)
+healthSafetyRoute.put(
+  '/inspection/:id/complete',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'safety officer'),
+  FileUpload.array('documents', 10),
+  completeInspection
+);
+
+// Attach inspection forms / photos without changing status
+healthSafetyRoute.post(
+  '/inspection/:id/documents',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'safety officer'),
+  FileUpload.array('documents', 10),
+  uploadInspectionDocuments
+);
+
+healthSafetyRoute.delete(
+  '/inspection/:id/documents/:docId',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'safety officer'),
+  deleteInspectionDocument
 );
 
 // ==================== HAZARD ROUTES ====================
