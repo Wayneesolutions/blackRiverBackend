@@ -1,4 +1,4 @@
-import { isFmcsaSmsProfile, parseFmcsaSmsProfile } from '../utils/carrierProfileUtils.js';
+import { isFmcsaSmsProfile, parseFmcsaSmsProfile, isNscCarrierProfile, parseNscCarrierProfile } from '../utils/carrierProfileUtils.js';
 import axios from 'axios';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
@@ -1830,6 +1830,15 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
           return { success: true, data: parsed };
         }
         console.warn('⚠️ Looked like an FMCSA SMS profile but no rows were parsed; falling back to AI extraction');
+      }
+      // Canadian NSC carrier profiles (Manitoba layout) are also read directly
+      if (isNscCarrierProfile(pdfText)) {
+        const parsed = parseNscCarrierProfile(pdfText);
+        if (parsed.inspections.length > 0 || parsed.printedTotals.inspections === 0) {
+          console.log(`✅ NSC carrier profile parsed directly: ${parsed.inspections.length} inspection(s), ${parsed.convictions.length} conviction(s)`);
+          return { success: true, data: parsed };
+        }
+        console.warn('⚠️ Looked like an NSC carrier profile but no rows were parsed; falling back to AI extraction');
       }
       try {
         console.log('📄 Converting PDF to images for AI processing (all pages)...');

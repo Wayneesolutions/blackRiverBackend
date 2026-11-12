@@ -30,7 +30,26 @@ const carrierProfileImportSchema = new mongoose.Schema(
     rowsInDocument: { type: Number, default: 0 },
     createdCount: { type: Number, default: 0 },
     skippedCount: { type: Number, default: 0 },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+    // ── Stand-alone carrier profile data (v2) ──
+    // Carrier profiles are kept separate from CVSA inspections: the whole document is stored
+    // here and the Carrier Performance dashboard is calculated from it.
+    version: { type: Number, default: 1 }, // 2 = stand-alone profile
+    country: { type: String, enum: ['canada', 'usa', null], default: null, index: true },
+    format: { type: String, default: null }, // 'nsc' | 'sms' | 'ai'
+    readBy: { type: String, default: null }, // 'parser' (read exactly) | 'ai'
+    profileDate: { type: Date, default: null }, // date the profile was produced
+    nscNumber: { type: String, default: null },
+    usdotNumber: { type: String, default: null },
+    thresholds: { type: mongoose.Schema.Types.Mixed, default: null },
+    printedTotals: { type: mongoose.Schema.Types.Mixed, default: null },
+    inspections: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    convictions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    defects: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    accidents: { type: Number, default: null },
+    fleet: { type: mongoose.Schema.Types.Mixed, default: null },
+    checks: { type: [String], default: [] } // differences between rows read and totals printed
   },
   { timestamps: true }
 );

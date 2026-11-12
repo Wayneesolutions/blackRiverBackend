@@ -382,13 +382,191 @@ export const parseFmcsaSmsProfile = (text) => {
     ? `${ending[3]}-${String(MONTH_NAMES.indexOf(ending[1].toLowerCase()) + 1).padStart(2, '0')}-${String(+ending[2]).padStart(2, '0')}`
     : null;
 
+  const violationTotal = (String(text).match(/VIOLATION SUMMARY[\s\S]*?Violations:\s*\|?\s*(\d+)/i) || [])[1];
   return {
+    format: 'sms',
+    profileDate: periodEnd,
+    printedTotals: {
+      inspections: total ? Number(total) : null,
+      violations: violationTotal ? Number(violationTotal) : null
+    },
     carrier: { name: carrierName, usdotNumber: usdot, safetyRating: null },
     period: { start: null, end: periodEnd },
     inspections,
     summary: {
       totalInspections: total ? Number(total) : null,
       period: ending ? `24-month record ending ${ending[1]} ${ending[2]}, ${ending[3]}` : null
+    }
+  };
+};
+
+// ─── Canadian NSC carrier profiles (Manitoba "Carrier Profile Summary") ─────
+// Parsed directly from the PDF text layer so the dashboard shows exactly what the
+// profile prints: CVSA Pass / Fail / OOS counts, thresholds, safety rating, every
+// inspection row, every conviction (ticket), defects by category and accidents.
+
+/** True when the PDF text layer looks like a Canadian NSC carrier profile. */
+export const isNscCarrierProfile = (text) =>
+  typeof text === 'string' && /Carrier Profile Summary/i.test(text) && /NSC #/i.test(text);
+
+const field = (text, label) => {
+  const m = String(text).match(new RegExp(`${label}\\s*\\|\\s*([^|\\n]+)`, 'i'));
+  return m ? clean(m[1]) : null;
+};
+
+const pct = (v) => (v === undefined || v === null || v === '' ? null : Number(String(v).replace('%', '')));
+
+/** Section of the text between two headings (start inclusive of nothing, end exclusive). */
+const section = (lines, startRe, endRe) => {
+  const start = lines.findIndex((l) => startRe.test(l));
+  if (start < 0) return [];
+  const rel = lines.slice(start + 1).findIndex((l) => endRe.test(l));
+  return lines.slice(start + 1, rel < 0 ? undefined : start + 1 + rel);
+};
+
+const isNoise = (l) =>
+  !l || /^--- Page/.test(l) || /^Created:/.test(l) || /^\d+$/.test(l) ||
+  /^Report # \|/.test(l) || /^State \| Plate/.test(l) || /^Generic Code \|/.test(l) || /^Description \| Number/.test(l) ||
+  /^Weight: Pass=/.test(l);
+
+export const parseNscCarrierProfile = (text) => {
+  const raw = String(text || '');
+  const lines = raw.split('\n').map((l) => l.trim());
+
+  // ── Header & summary ──
+  const ratingIdx = lines.findIndex((l) => /^Safety Rating \| Performance Rating/i.test(l));
+  const safetyRating = ratingIdx >= 0 ? clean(lines[ratingIdx + 1].split(' | ')[0]) : null;
+  // "78.29% | 0.00%" follows "Inspection Threshold | Accident Threshold";
+  // "46.32% | 68.68%" follows "Conviction Threshold | Overall Threshold" (with "Result | Count" between)
+  const pctLines = lines.filter((l) => /^\d+(\.\d+)?% \| \d+(\.\d+)?%$/.test(l));
+  const [inspectionThreshold, accidentThreshold] = pctLines[0] ? pctLines[0].split(' | ').map(pct) : [null, null];
+  const [convictionThreshold, overallThreshold] = pctLines[1] ? pctLines[1].split(' | ').map(pct) : [null, null];
+  const countAfter = (label) => {
+    const inline = raw.match(new RegExp(`^${label} \\| (\\d+)$`, 'im'));
+    if (inline) return Number(inline[1]);
+    // Layout sometimes puts the number on the line above the label ("20" / "Fail")
+    const i = lines.findIndex((l) => l === label);
+    if (i > 0 && /^\d+$/.test(lines[i - 1])) return Number(lines[i - 1]);
+    if (i >= 0 && /^\d+$/.test(lines[i + 1] || '')) return Number(lines[i + 1]);
+    return null;
+  };
+  const printedPass = countAfter('Pass');
+  const printedFail = countAfter('Fail');
+  const printedOos = countAfter('OOS');
+  const created = raw.match(/Created:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/); // US order, e.g. 11/2/2026
+  const profileDate = created ? `${created[3]}-${created[1].padStart(2, '0')}-${created[2].padStart(2, '0')}` : null;
+
+  // ── Convictions (tickets) ──
+  const convictions = [];
+  const convRe = /^(.+?) \| ([\w.()/-]+) \| (\w+) \| ([A-Z]{2}) \| (\d{2}\/[A-Za-z]{3}\/\d{4}) \| (\d{2}\/[A-Za-z]{3}\/\d{4}) \| ([^|]+?) \| (\d+) \| ([YN])(?: \| ([^|]+?))?(?: \| ([A-Z]{2}))?$/;
+  let lastConv = null;
+  for (const l of section(lines, /^Carrier Convictions$/i, /^Carrier Convictions by Offence/i)) {
+    if (isNoise(l)) continue;
+    const m = l.match(convRe);
+    if (m) {
+      lastConv = {
+        description: clean(m[1]),
+        section: m[2],
+        ticketNumber: m[3],
+        jurisdiction: m[4],
+        violationDate: parseDocumentDate(m[5]),
+        convictionDate: parseDocumentDate(m[6]),
+        plate: clean(m[7]),
+        weight: Number(m[8]),
+        accidentInvolved: m[9] === 'Y',
+        driverLicense: m[10] ? clean(m[10]) : null,
+        licenseJurisdiction: m[11] || null
+      };
+      convictions.push(lastConv);
+    } else if (lastConv && !l.includes(' | ')) {
+      lastConv.description = `${lastConv.description} ${l}`; // wrapped description
+    } else if (lastConv) {
+      // A wrapped description line that also carries the end of a long licence number
+      // ("A COMMERCIAL | 10")
+      const wrap = l.match(/^(.+?) \| (\w+)$/);
+      if (wrap) {
+        lastConv.description = `${lastConv.description} ${clean(wrap[1])}`;
+        if (lastConv.driverLicense) lastConv.driverLicense = `${lastConv.driverLicense}${wrap[2]}`;
+      }
+    }
+  }
+  const convTotals = raw.match(/GRAND TOTALS \| (\d+) \| (\d+)/i);
+
+  // ── Inspections ──
+  const inspections = [];
+  // Long driver names run into the weight column ("SOOR , HARSIMRANSINGH 3"), so the last
+  // separator may be a space instead of " | "
+  const inspRe = /^(\S+) \| ([1-6]) \| ([A-Z]{2}) \| (.+?) \| (\d{2}\/[A-Za-z]{3}\/\d{4}) \| (\S+) \| (.+?)(?: \| | +)(\d+)$/;
+  const resultRe = /^(?:(.+?) \| )?(PASS|FAIL|OOS|WARNING|REQ\.? ?ATTN\.?)$/i;
+  let lastInsp = null;
+  for (const l of section(lines, /^Carrier Inspections$/i, /^Carrier CVSA Inspection Defects/i)) {
+    if (isNoise(l)) continue;
+    const m = l.match(inspRe);
+    if (m) {
+      lastInsp = {
+        reportNumber: m[1],
+        level: Number(m[2]),
+        province: m[3],
+        location: clean(m[4]),
+        date: parseDocumentDate(m[5]),
+        vehicleUnitNo: m[6],
+        driverName: clean(m[7]).replace(/\s+,/g, ','),
+        weight: Number(m[8]),
+        result: null
+      };
+      inspections.push(lastInsp);
+      continue;
+    }
+    const r = l.match(resultRe);
+    if (r && lastInsp && !lastInsp.result) {
+      if (r[1]) lastInsp.location = `${lastInsp.location} ${clean(r[1])}`;
+      lastInsp.result = r[2].toUpperCase();
+    } else if (lastInsp && !l.includes(' | ') && !lastInsp.result) {
+      lastInsp.location = `${lastInsp.location} ${l}`;
+    }
+  }
+
+  // ── Defects by category ──
+  const defects = [];
+  let category = null;
+  for (const l of section(lines, /^Carrier CVSA Inspection Defects/i, /^(No Accidents|Carrier Accidents|Carrier Collisions)/i)) {
+    if (/^--- Page|^Created:|^Category$|^Defect Description \|/.test(l)) continue;
+    const total = l.match(/^Total for Report \| (\d+)/i);
+    if (total) continue;
+    if (/^Total for Category/i.test(l)) continue;
+    const d = l.match(/^(.+?) \| (\d+)$/);
+    if (d && category) defects.push({ category, description: clean(d[1]), count: Number(d[2]) });
+    else if (l && !l.includes(' | ')) category = clean(l);
+  }
+  const defectTotal = raw.match(/Total for Report \| (\d+)/i);
+
+  const noAccidents = /No Accidents for Carrier/i.test(raw);
+
+  return {
+    format: 'nsc',
+    carrier: {
+      name: field(raw, 'Carrier Name:'),
+      nscNumber: field(raw, 'NSC #:'),
+      usdotNumber: field(raw, 'US DOT #:'),
+      safetyRating
+    },
+    profileDate,
+    thresholds: { inspection: inspectionThreshold, accident: accidentThreshold, conviction: convictionThreshold, overall: overallThreshold },
+    printedTotals: {
+      pass: printedPass,
+      fail: printedFail,
+      oos: printedOos,
+      inspections: [printedPass, printedFail, printedOos].every((n) => typeof n === 'number') ? printedPass + printedFail + printedOos : null,
+      convictionsByOffence: convTotals ? Number(convTotals[1]) : null,
+      defects: defectTotal ? Number(defectTotal[1]) : null
+    },
+    inspections,
+    convictions,
+    defects,
+    accidents: noAccidents ? 0 : null,
+    fleet: {
+      current: Number(field(raw, 'Current MB Fleet:')) || null,
+      average: Number(field(raw, 'Average MB Fleet:')) || null
     }
   };
 };

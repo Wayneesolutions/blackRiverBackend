@@ -1,3 +1,4 @@
+import { uploadCarrierProfile, listCarrierProfiles, getCarrierProfileDashboard, deleteCarrierProfile } from '../controllers/compilance/carrierProfileController.js';
 import express from 'express'
 import { registerAdmin, createAdmin, getAllowedRolesForAdmin } from '../controllers/adminManageController.js'
 import { 
@@ -627,6 +628,34 @@ adminRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
   deleteCarrierProfileImport
+);
+
+// Carrier profiles: stored separately from CVSA inspections (uploading a profile never
+// creates or changes CVSA inspection records)
+adminRoute.post(
+  '/carrier-profiles/upload',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  FileUploadMemory.single('document'),
+  uploadCarrierProfile
+);
+adminRoute.get(
+  '/carrier-profiles',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  listCarrierProfiles
+);
+adminRoute.get(
+  '/carrier-profiles/dashboard',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  getCarrierProfileDashboard
+);
+adminRoute.delete(
+  '/carrier-profiles/:id',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  deleteCarrierProfile
 );
 
 adminRoute.get(
