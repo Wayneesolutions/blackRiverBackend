@@ -1,4 +1,4 @@
-import { uploadCarrierProfile, listCarrierProfiles, getCarrierProfileDashboard, deleteCarrierProfile } from '../controllers/compilance/carrierProfileController.js';
+import { uploadCarrierProfile, listCarrierProfiles, getCarrierProfileDashboard, deleteCarrierProfile, extractCvsaReport } from '../controllers/compilance/carrierProfileController.js';
 import express from 'express'
 import { registerAdmin, createAdmin, getAllowedRolesForAdmin } from '../controllers/adminManageController.js'
 import { 
@@ -628,6 +628,15 @@ adminRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
   deleteCarrierProfileImport
+);
+
+// Read one CVSA inspection report (PDF/photo) to pre-fill the Add Inspection form (saves nothing)
+adminRoute.post(
+  '/cvsa-inspections/extract-report',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'Compliance Manager'),
+  FileUploadMemory.single('document'),
+  extractCvsaReport
 );
 
 // Carrier profiles: stored separately from CVSA inspections (uploading a profile never

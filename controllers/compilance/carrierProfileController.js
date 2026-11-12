@@ -8,7 +8,9 @@
 import mongoose from "mongoose";
 import { CarrierProfileImport } from "../../models/compliance/carrierProfileImportModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
-import { extractCarrierProfileData } from "../../services/openaiService.js";
+import { extractCarrierProfileData, extractCvsaInspectionReport } from "../../services/openaiService.js";
+import { Vehicle } from "../../models/driver/vehicleModel.js";
+import { User } from "../../models/driver/userModel.js";
 import { normalizeCarrierProfileExtraction, parseDocumentDate } from "../../utils/carrierProfileUtils.js";
 
 const toObjectId = (value) =>
@@ -443,3 +445,50 @@ export const deleteCarrierProfile = async (req, res) => {
 
 // Exported for tests
 export { bucketOf, parseDocumentDate };
+
+// ─── CVSA inspection report reader ──────────────────────────────────────────
+// POST /admin/cvsa-inspections/extract-report (multipart field: document)
+// Reads one roadside inspection report and returns values to pre-fill the Add Inspection
+// form, plus the matching truck and driver from the company's records when found.
+// Nothing is saved: the user reviews the form and clicks Save as usual.
+
+const exact = (v) => ({ $regex: `^${String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' });
+
+export const extractCvsaReport = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Please upload the inspection report (PDF or photo)" });
+    }
+    const companyId = getUserCompanyId(req.user);
+    const result = await extractCvsaInspectionReport(req.file.buffer, req.file.mimetype);
+    if (!result.success) {
+      return res.status(result.statusCode || 422).json({ success: false, message: result.error });
+    }
+    const data = result.data;
+
+    let vehicle = null;
+    const plateOrUnit = [data.vehiclePlate, data.vehicleUnitNumber].filter(Boolean);
+    if (companyId && plateOrUnit.length) {
+      vehicle = await Vehicle.findOne({
+        ...companyQuery(companyId),
+        $or: plateOrUnit.flatMap((v) => [{ plateNumber: exact(v) }, { unitNumber: exact(v) }, { internalId: exact(v) }])
+      }).select('_id plateNumber unitNumber internalId make model').lean();
+    }
+    let driver = null;
+    if (companyId && (data.driverLicenseNumber || data.driverName)) {
+      const or = [];
+      if (data.driverLicenseNumber) or.push({ 'details.licenceNumber': exact(data.driverLicenseNumber) }, { 'details.driversLicence': exact(data.driverLicenseNumber) });
+      if (data.driverName) or.push({ name: exact(data.driverName) });
+      driver = await User.findOne({ ...companyQuery(companyId), role: 'driver', $or: or }).select('_id name').lean();
+    }
+
+    res.json({
+      success: true,
+      message: "Report read. Please check the form before saving.",
+      data: { ...data, matchedVehicleId: vehicle?._id || null, matchedDriverId: driver?._id || null }
+    });
+  } catch (err) {
+    console.error('Error reading CVSA report:', err);
+    res.status(500).json({ success: false, message: err.message || "Could not read the report" });
+  }
+};
