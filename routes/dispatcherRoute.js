@@ -575,6 +575,14 @@ dispatcherRoute.get(
   getTrailersWithTracking
 )
 
+// Legacy trailer selection endpoint (declared before /trailer/:id so 'selected' isn't read as an id)
+dispatcherRoute.get(
+  '/trailer/selected',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  selectedTrailor
+)
+
 dispatcherRoute.get(
   '/trailer/:id',
   authMiddleware,
@@ -608,14 +616,6 @@ dispatcherRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
   deleteTrailer
-)
-
-// Legacy trailer selection endpoint
-dispatcherRoute.get(
-  '/trailer/selected',
-  authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
-  selectedTrailor
 )
 
 // Service Rate
@@ -818,7 +818,8 @@ dispatcherRoute.get(
 dispatcherRoute.get(
   '/order',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'accountant'),
+  // Read-only list; HR (Driver Portfolio, Trucks, Trailers) and Fleet (Trucks, Trailers) show order info
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'accountant', 'hr', 'Fleet Maintenance Manager'),
   getAllOrders
 )
 dispatcherRoute.get(

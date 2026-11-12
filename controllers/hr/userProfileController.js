@@ -133,7 +133,9 @@ const aggregateAttendanceByUser = async ({ userIds, startDate, endDate, companyI
     {
       $group: {
         _id: "$employee",
-        totalHours: { $sum: { $ifNull: ["$totalHours", 0] } },
+        // A single attendance day can never be more than 24 hours (older records from
+        // sessions that were never closed can hold multi-day totals)
+        totalHours: { $sum: { $min: [{ $ifNull: ["$totalHours", 0] }, 24] } },
         daysWorked: {
           $sum: {
             $cond: [{ $in: ["$status", ["present", "late", "leave"]] }, 1, 0]

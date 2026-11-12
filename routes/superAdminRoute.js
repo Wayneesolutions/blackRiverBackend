@@ -62,26 +62,26 @@ superAdminRoute.get(
 superAdminRoute.post(
   '/admin',
   authMiddleware,
-  authorizeRoles('superadmin', 'hr'),
+  authorizeRoles('superadmin'), // Super Admin only: these manage every customer's Admin account
   createAdmin
 )
 superAdminRoute.get(
   '/admin',
   authMiddleware,
-  authorizeRoles('superadmin', 'hr'),
+  authorizeRoles('superadmin'), // Super Admin only: these manage every customer's Admin account
   getAllAdmins
 )
 superAdminRoute.put(
   '/admin/:id',
   authMiddleware,
-  authorizeRoles('superadmin', 'hr'),
+  authorizeRoles('superadmin'), // Super Admin only: these manage every customer's Admin account
   updateAdmin
 )
 
 superAdminRoute.delete(
   '/admin/:id',
   authMiddleware,
-  authorizeRoles('superadmin', 'hr'),
+  authorizeRoles('superadmin'), // Super Admin only: these manage every customer's Admin account
   deleteAdmin
 )
 

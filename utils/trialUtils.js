@@ -96,9 +96,9 @@ export const startTrial = async (adminId, trialDays) => {
       trialEndDate: trialEndDate
     }).then(result => {
       if (result.success) {
-        // Mark email as sent
-        admin.trialEmailSent = true;
-        admin.save();
+        // Mark email as sent. Use updateOne and return the promise so a failure (e.g. the admin
+        // was deleted while the email was sending) is caught below instead of crashing Node.
+        return User.updateOne({ _id: admin._id }, { $set: { trialEmailSent: true } });
       }
     }).catch(err => {
       console.error('Error sending trial start email:', err);
@@ -214,7 +214,8 @@ export const checkTrialStatus = async (adminId) => {
       }).then(result => {
         if (result.success) {
           admin.trialExpiredEmailSent = true;
-          admin.save();
+          // Returned so a failed save is caught below rather than crashing the server
+          return User.updateOne({ _id: admin._id }, { $set: { trialExpiredEmailSent: true } });
         }
       }).catch(err => {
         console.error('Error sending trial expired email:', err);

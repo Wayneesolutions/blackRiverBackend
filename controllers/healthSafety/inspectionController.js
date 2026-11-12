@@ -277,3 +277,103 @@ export const deleteInspection = async (req, res) => {
   }
 };
 
+
+
+// Turns uploaded multer files (S3 or local disk) into document entries
+const filesToDocuments = (files, uploadedBy) =>
+  (Array.isArray(files) ? files : [])
+    .map((file) => {
+      let url = '';
+      if (file.location) url = file.location; // S3
+      else if (file.path) url = `${process.env.BASE_URL || 'http://localhost:3000'}/${file.path.replace(/\\/g, '/')}`;
+      if (!url) return null;
+      return {
+        name: file.originalname || file.filename || 'Document',
+        url,
+        key: file.key || '',
+        mimeType: file.mimetype || '',
+        size: file.size || 0,
+        uploadedAt: new Date(),
+        uploadedBy: uploadedBy || ''
+      };
+    })
+    .filter(Boolean);
+
+const findCompanyInspection = async (req) => {
+  const companyId = getUserCompanyId(req.user);
+  const isSuperadmin = req.user?.role === 'superadmin';
+  const query = { _id: req.params.id };
+  if (!isSuperadmin && companyId) query.company = companyId;
+  return Inspection.findOne(query);
+};
+
+// ✅ Mark a scheduled inspection as complete, with result, notes and the filled-in form(s)
+export const completeInspection = async (req, res) => {
+  try {
+    const inspection = await findCompanyInspection(req);
+    if (!inspection) {
+      return res.status(404).json({ success: false, message: "Inspection not found" });
+    }
+
+    const { completedDate, completedBy, result, completionNotes } = req.body;
+    if (result && !['pass', 'fail', 'action-required'].includes(result)) {
+      return res.status(400).json({ success: false, message: "Result must be pass, fail or action-required" });
+    }
+
+    const uploaderName = req.user?.name || '';
+    inspection.status = 'completed';
+    inspection.completedDate = completedDate ? new Date(completedDate) : new Date();
+    inspection.completedBy = (completedBy && String(completedBy).trim()) || uploaderName;
+    if (result) inspection.result = result;
+    if (completionNotes !== undefined) inspection.completionNotes = completionNotes;
+    inspection.documents.push(...filesToDocuments(req.files, uploaderName));
+
+    await inspection.save();
+    await inspection.populate('createdBy', 'name email');
+
+    res.json({ success: true, message: "Inspection marked as complete", data: inspection });
+  } catch (err) {
+    console.error('Complete inspection error:', err);
+    res.status(500).json({ success: false, message: err.message || "Failed to complete inspection" });
+  }
+};
+
+// ✅ Upload inspection forms / photos to an inspection (without changing its status)
+export const uploadInspectionDocuments = async (req, res) => {
+  try {
+    const inspection = await findCompanyInspection(req);
+    if (!inspection) {
+      return res.status(404).json({ success: false, message: "Inspection not found" });
+    }
+    const docs = filesToDocuments(req.files, req.user?.name);
+    if (docs.length === 0) {
+      return res.status(400).json({ success: false, message: "Please attach at least one file" });
+    }
+    inspection.documents.push(...docs);
+    await inspection.save();
+    res.json({ success: true, message: `${docs.length} file(s) uploaded`, data: inspection });
+  } catch (err) {
+    console.error('Upload inspection documents error:', err);
+    res.status(500).json({ success: false, message: err.message || "Failed to upload files" });
+  }
+};
+
+// ✅ Remove one uploaded document from an inspection
+export const deleteInspectionDocument = async (req, res) => {
+  try {
+    const inspection = await findCompanyInspection(req);
+    if (!inspection) {
+      return res.status(404).json({ success: false, message: "Inspection not found" });
+    }
+    const before = inspection.documents.length;
+    inspection.documents = inspection.documents.filter((d) => String(d._id) !== req.params.docId);
+    if (inspection.documents.length === before) {
+      return res.status(404).json({ success: false, message: "Document not found" });
+    }
+    await inspection.save();
+    res.json({ success: true, message: "Document removed", data: inspection });
+  } catch (err) {
+    console.error('Delete inspection document error:', err);
+    res.status(500).json({ success: false, message: err.message || "Failed to remove document" });
+  }
+};

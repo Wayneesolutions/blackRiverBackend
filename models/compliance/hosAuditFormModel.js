@@ -27,6 +27,11 @@ const hosAuditFormSchema = new mongoose.Schema({
   incidentTypes: [{ type: String, trim: true }],
   priorCounseling: { type: String, trim: true },
   correctiveActionType: { type: String, trim: true },
+  // Free-text "Comments" next to the corrective action on the paper form (e.g. "ELD MALFUNCTION")
+  correctiveActionComments: { type: String, trim: true },
+  // True when the incident was an ELD malfunction (e.g. a mechanic moved the truck under the
+  // driver's login). Recorded for the file but NOT counted as a driver HOS violation.
+  eldMalfunction: { type: Boolean, default: false },
   notes: { type: String, trim: true },
   auditorName: { type: String, trim: true },
   documents: [documentSchema],

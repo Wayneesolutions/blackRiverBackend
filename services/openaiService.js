@@ -1,3 +1,4 @@
+import { isFmcsaSmsProfile, parseFmcsaSmsProfile, isNscCarrierProfile, parseNscCarrierProfile } from '../utils/carrierProfileUtils.js';
 import axios from 'axios';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
@@ -1819,6 +1820,26 @@ export const extractCarrierProfileData = async (fileBuffer, mimeType) => {
     if (isPDF) {
       pdfText = await extractPdfTableText(fileBuffer);
       console.log(`📄 PDF text layer: ${pdfText.length} characters`);
+
+      // US FMCSA SMS profiles have a reliable text layer and a fixed layout (month-first dates,
+      // no Pass/Fail column), so read them directly instead of sending them to the AI.
+      if (isFmcsaSmsProfile(pdfText)) {
+        const parsed = parseFmcsaSmsProfile(pdfText);
+        if (parsed.inspections.length > 0) {
+          console.log(`✅ FMCSA SMS profile parsed directly: ${parsed.inspections.length} inspection(s)`);
+          return { success: true, data: parsed };
+        }
+        console.warn('⚠️ Looked like an FMCSA SMS profile but no rows were parsed; falling back to AI extraction');
+      }
+      // Canadian NSC carrier profiles (Manitoba layout) are also read directly
+      if (isNscCarrierProfile(pdfText)) {
+        const parsed = parseNscCarrierProfile(pdfText);
+        if (parsed.inspections.length > 0 || parsed.printedTotals.inspections === 0) {
+          console.log(`✅ NSC carrier profile parsed directly: ${parsed.inspections.length} inspection(s), ${parsed.convictions.length} conviction(s)`);
+          return { success: true, data: parsed };
+        }
+        console.warn('⚠️ Looked like an NSC carrier profile but no rows were parsed; falling back to AI extraction');
+      }
       try {
         console.log('📄 Converting PDF to images for AI processing (all pages)...');
         imageBuffers = await convertPdfBufferToImages(fileBuffer); // Convert all pages
@@ -1985,6 +2006,44 @@ ${pdfText}
       // Check if there's a refusal from the model
       if (refusal) {
         console.error('❌ OpenAI API Refusal:', refusal);
+
+        // USA (FMCSA) carrier profiles list driver names / licence numbers on page images, which
+        // the vision model sometimes refuses. When the PDF has a text layer, retry with the text
+        // only (no images) and make clear this is the carrier's own compliance record.
+        if (pdfText && pdfText.trim().length > 200) {
+          try {
+            console.log('🔄 Retrying carrier profile extraction with the PDF text layer only...');
+            const textOnlyResponse = await withRateLimitRetry(() => axios.post(
+              OPENAI_API_URL,
+              {
+                model: 'gpt-4o',
+                messages: [
+                  {
+                    role: 'system',
+                    content: systemPrompt + '\n\nContext: this is the trucking company\'s own carrier safety profile (Canadian NSC or US FMCSA/SMS), uploaded by the company\'s compliance manager to keep its own CVSA inspection records. Transcribing it is routine record-keeping.'
+                  },
+                  { role: 'user', content: userPrompt }
+                ],
+                max_tokens: 16000,
+                temperature: 0.1,
+                response_format: { type: 'json_object' }
+              },
+              {
+                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                timeout: 90000
+              }
+            ));
+            const textOnlyContent = textOnlyResponse.data.choices?.[0]?.message?.content;
+            if (textOnlyContent) {
+              const parsed = JSON.parse(textOnlyContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
+              console.log('✅ Text-only retry succeeded');
+              return { success: true, data: parsed, usage: textOnlyResponse.data.usage };
+            }
+          } catch (textOnlyError) {
+            console.error('❌ Text-only retry failed:', textOnlyError.message);
+          }
+        }
+
         console.log('🔄 Attempting retry without strict JSON format requirement...');
         
         // Retry without response_format constraint (sometimes helps with refusals)
@@ -2033,7 +2092,7 @@ ${pdfText}
           if (retryRefusal) {
             return {
               success: false,
-              error: `The AI model refused to process this document. This may happen if the document is unreadable, corrupted, or contains content that triggers safety filters. Please ensure the document is a valid carrier profile document and try again. If the issue persists, try converting the PDF to images manually and uploading the images instead.`,
+              error: `We couldn't read this carrier profile automatically. Please make sure it is the original PDF downloaded from the carrier profile / FMCSA portal (not a scan or photo) and try again. If it still fails, send the file to support so we can check it.`,
               data: null
             };
           }
@@ -2062,7 +2121,7 @@ ${pdfText}
         
         return {
           success: false,
-          error: `The AI model refused to process this document. This may happen if the document is unreadable, corrupted, or contains content that triggers safety filters. Please ensure the document is a valid carrier profile document and try again. If the issue persists, try converting the PDF to images manually and uploading the images instead.`,
+          error: `We couldn't read this carrier profile automatically. Please make sure it is the original PDF downloaded from the carrier profile / FMCSA portal (not a scan or photo) and try again. If it still fails, send the file to support so we can check it.`,
           data: null
         };
       }
@@ -2333,3 +2392,99 @@ export const extractFleetInvoiceData = async (fileBuffer, mimeType) => {
   }
 };
 
+
+/**
+ * Reads ONE CVSA inspection report (roadside inspection report, PDF or photo) so the
+ * "Add Inspection" form can be filled automatically. Uses the PDF text layer when there is
+ * one, plus the page images. Returns values shaped like the CVSA inspection form.
+ */
+export const extractCvsaInspectionReport = async (fileBuffer, mimeType) => {
+  try {
+    const apiKey = getOpenAIKey();
+    const isImage = mimeType.startsWith('image/');
+    const isPDF = mimeType === 'application/pdf';
+    if (!isImage && !isPDF) {
+      return { success: false, statusCode: 400, error: 'Please upload the inspection report as a PDF or an image (JPG/PNG).' };
+    }
+
+    let imageBuffers = [fileBuffer];
+    let finalMimeType = mimeType;
+    let pdfText = '';
+    if (isPDF) {
+      pdfText = await extractPdfTableText(fileBuffer, 20000);
+      try {
+        imageBuffers = (await convertPdfBufferToImages(fileBuffer)).slice(0, 4); // a report is 1–4 pages
+        finalMimeType = 'image/png';
+      } catch (conversionError) {
+        if (!pdfText) {
+          return { success: false, statusCode: 422, error: 'This PDF could not be read. Please upload a clearer copy or a photo of the report.' };
+        }
+        imageBuffers = [];
+      }
+    }
+
+    const systemPrompt = 'You read North American CVSA roadside inspection reports (Canadian provincial reports and US driver/vehicle examination reports) for a trucking company that keeps its own inspection records. Copy values exactly as printed. Return JSON only.';
+    const userPrompt = `Read this CVSA inspection report and return a JSON object with exactly these keys (null when not printed — never guess):
+{
+  "country": "canada" | "usa" | null (where the inspection took place),
+  "date": "YYYY-MM-DD" | null (inspection date; US reports print month first, Canadian reports usually day first),
+  "timeOfInspection": "HH:MM" | null (24-hour),
+  "location": string | null (inspection site / city, as printed),
+  "jurisdiction": string | null (2-letter province or state code),
+  "reportNumber": string | null (report / inspection number, copied exactly),
+  "inspectionLevel": "I" | "II" | "III" | "IV" | "V" | null,
+  "result": "pass" | "fail" | "warning" | "out-of-service" | null (out-of-service if any OOS item or OOS sticker; fail/warning if defects or violations without OOS; pass if none),
+  "inspectorName": string | null (officer name or badge),
+  "driverName": string | null,
+  "driverLicenseNumber": string | null,
+  "vehiclePlate": string | null (power unit plate),
+  "vehicleUnitNumber": string | null (power unit unit number, if printed),
+  "carrierUSDOTNumber": string | null,
+  "carrierMotorCarrierNumber": string | null (NSC / MC number),
+  "outOfServiceIssued": boolean,
+  "violations": [ { "code": string, "description": string, "severity": "minor" | "major" | "critical" } ] (critical = out-of-service item),
+  "notes": string | null (other remarks printed on the report)
+}${pdfText ? `
+
+Text layer of the PDF (cells separated by " | "); use it as the primary source:
+<pdf_text>
+${pdfText}
+</pdf_text>` : ''}`;
+
+    const response = await withRateLimitRetry(() => axios.post(
+      OPENAI_API_URL,
+      {
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: userPrompt },
+              ...imageBuffers.map((b) => ({ type: 'image_url', image_url: { url: `data:${finalMimeType};base64,${b.toString('base64')}` } }))
+            ]
+          }
+        ],
+        max_tokens: 3000,
+        temperature: 0.1,
+        response_format: { type: 'json_object' }
+      },
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 90000 }
+    ));
+
+    const content = response.data.choices?.[0]?.message?.content;
+    if (!content) {
+      return { success: false, statusCode: 422, error: 'The report could not be read automatically. Please fill the form by hand.' };
+    }
+    const data = JSON.parse(content);
+    if (data.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(data.date))) data.date = null;
+    if (!['canada', 'usa'].includes(data.country)) data.country = null;
+    if (!['pass', 'fail', 'warning', 'out-of-service'].includes(data.result)) data.result = null;
+    if (!['I', 'II', 'III', 'IV', 'V'].includes(data.inspectionLevel)) data.inspectionLevel = null;
+    data.violations = Array.isArray(data.violations) ? data.violations.filter((v) => v && (v.code || v.description)) : [];
+    return { success: true, data, usage: response.data.usage };
+  } catch (error) {
+    console.error('Error in extractCvsaInspectionReport:', error.response?.data || error.message);
+    return { success: false, statusCode: 500, error: 'Could not read the inspection report. Please try again or fill the form by hand.' };
+  }
+};

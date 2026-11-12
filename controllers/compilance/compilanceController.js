@@ -77,6 +77,20 @@ const applyCompanyFilter = (target, companyId) => {
   target.company = normalized ? { $in: [normalized, companyId] } : companyId;
 };
 
+// Carrier profiles are kept separate from CVSA inspections. Rows that older versions created
+// from carrier profile uploads (tagged source 'carrier-profile' / an importBatch, or the earliest
+// ones with no vehicle and no driver; manual inspections always have both) are left out of the
+// CVSA pages. Added with $and so it never clashes with a search $or.
+const excludeCarrierProfileRows = (query) => {
+  query.$and = [
+    ...(query.$and || []),
+    { source: { $ne: 'carrier-profile' } },
+    { $or: [{ importBatch: null }, { importBatch: { $exists: false } }] },
+    { $or: [{ vehicle: { $ne: null } }, { driver: { $ne: null } }] }
+  ];
+  return query;
+};
+
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
   if (!prefixedId) return null;
@@ -1099,6 +1113,7 @@ export const getCvsaInspections = async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
+    excludeCarrierProfileRows(query);
     let inspections = await CvsaInspection.find(query)
       .populate('driver', 'name email')
       .sort({ date: -1, createdAt: -1 })
@@ -1565,6 +1580,7 @@ export const getCvsaInspectionStats = async (req, res) => {
     if (!isSuperadmin && companyId) {
       applyCompanyFilter(query, companyId);
     }
+    excludeCarrierProfileRows(query);
 
     const [
       total,
@@ -1640,6 +1656,7 @@ export const getCvsaMonthlyReport = async (req, res) => {
     const startDate = new Date(targetYear, 0, 1);
     const endDate = new Date(targetYear, 11, 31, 23, 59, 59, 999);
     query.date = { $gte: startDate, $lte: endDate };
+    excludeCarrierProfileRows(query);
 
     // Aggregate monthly data
     const pipeline = [{ $match: query }];

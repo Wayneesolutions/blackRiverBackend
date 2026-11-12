@@ -58,7 +58,8 @@ employeeDocumentRoute.get(
 employeeDocumentRoute.get(
     "/expiring",
     authMiddleware,
-    authorizeRoles('admin', 'superadmin', 'hr'),
+    // Read-only; the expiring-documents pop-up is shown in the Fleet, Accounts and GPS panels too
+    authorizeRoles('admin', 'superadmin', 'hr', 'Fleet Maintenance Manager', 'accountant', 'dispatcher'),
     getExpiringDocuments
 );
 

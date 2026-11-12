@@ -239,7 +239,9 @@ export const getHOSEldData = async (req, res) => {
 
       // Determine violation type
       let violationType = 'None';
-      if (log.violations) {
+      if (log.eldMalfunction && !log.violations) {
+        violationType = 'ELD Malfunction';
+      } else if (log.violations) {
         if (driveUsed > 11) {
           violationType = '11-Hour Limit';
         } else if (driveUsed + dutyUsed > 14) {
@@ -258,13 +260,15 @@ export const getHOSEldData = async (req, res) => {
         date: log.date ? new Date(log.date).toISOString().split('T')[0] : '',
         driveUsed: `${Math.floor(driveUsed)}h ${Math.round((driveUsed % 1) * 60)}m`,
         dutyUsed: `${Math.floor(dutyUsed)}h ${Math.round((dutyUsed % 1) * 60)}m`,
-        status: log.violations ? 'violation' : (driveUsed > 10 ? 'warning' : 'compliant'),
+        status: log.violations ? 'violation' : log.eldMalfunction ? 'eld-malfunction' : (driveUsed > 10 ? 'warning' : 'compliant'),
         violation: violationType,
         vehicle: vehicle.unitNo || 'N/A',
         totalDrivingHours: driveUsed,
         totalOnDutyHours: dutyUsed,
         totalOffDutyHours: log.totalOffDutyHours || 0,
         violations: log.violations || false,
+        eldMalfunction: log.eldMalfunction || false,
+        auditViolations: log.auditViolations || [],
         logs: log.logs || []
       };
     });
@@ -1170,6 +1174,8 @@ export const createHosAuditForm = async (req, res) => {
       incidentTypes,
       priorCounseling,
       correctiveActionType,
+      correctiveActionComments,
+      eldMalfunction,
       notes,
       auditorName,
       documents
@@ -1227,6 +1233,11 @@ export const createHosAuditForm = async (req, res) => {
     }
 
     const auditDateObj = new Date(auditDate);
+    // multipart sends booleans as strings. Also treat "ELD malfunction" typed in the corrective
+    // action comments / type as a malfunction, since that's how the paper form records it.
+    const mentionsMalfunction = (v) => typeof v === 'string' && /\beld\b[\s-]*mal/i.test(v);
+    const isEldMalfunction = eldMalfunction === true || eldMalfunction === 'true' ||
+      mentionsMalfunction(correctiveActionComments) || mentionsMalfunction(correctiveActionType);
     const payload = {
       driverId,
       driverIdDisplay: driverIdDisplay || '',
@@ -1242,6 +1253,8 @@ export const createHosAuditForm = async (req, res) => {
       incidentTypes: Array.isArray(incidentTypes) ? incidentTypes : [],
       priorCounseling: priorCounseling || '',
       correctiveActionType: correctiveActionType || '',
+      correctiveActionComments: correctiveActionComments || '',
+      eldMalfunction: isEldMalfunction,
       notes: notes || '',
       auditorName: auditorName || '',
       documents: uploadedDocuments.length > 0 ? uploadedDocuments : [],
@@ -1260,7 +1273,8 @@ export const createHosAuditForm = async (req, res) => {
     const drivingHrs = typeof drivingHours === 'number' ? drivingHours : parseFloat(drivingHours) || 0;
     const onDutyHrs = typeof onDutyHours === 'number' ? onDutyHours : parseFloat(onDutyHours) || 0;
     const offDutyHrs = typeof offDutyHours === 'number' ? offDutyHours : parseFloat(offDutyHours) || 0;
-    const hasViolations = Array.isArray(violations) && violations.length > 0;
+    // An ELD malfunction is documented, but it is not a driver violation
+    const hasViolations = !isEldMalfunction && Array.isArray(violations) && violations.length > 0;
     await HOSLog.findOneAndUpdate(
       { driverId, date: startOfDay },
       {
@@ -1275,6 +1289,7 @@ export const createHosAuditForm = async (req, res) => {
         auditorName: auditorName || req.user?.name || 'Unknown',
         auditedAt: new Date(),
         auditViolations: Array.isArray(violations) ? violations : [],
+        eldMalfunction: isEldMalfunction,
         company: companyId
       },
       { upsert: true, new: true }

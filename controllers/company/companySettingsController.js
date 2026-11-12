@@ -201,7 +201,21 @@ export const getCompanySettings = async (req, res) => {
       }
     }
 
-    // 3. Return company settings with signed logo URL
+    // 3. GPS integration secrets are for the company Admin only. Every staff role (and drivers)
+    // can read company settings, so remove the API credentials for them.
+    if (!['admin', 'superadmin'].includes(req.user?.role)) {
+      if (companyData.samsaraConfig) {
+        companyData.samsaraConfig = { ...companyData.samsaraConfig };
+        delete companyData.samsaraConfig.apiToken;
+      }
+      if (companyData.thermokingConfig) {
+        companyData.thermokingConfig = { ...companyData.thermokingConfig };
+        delete companyData.thermokingConfig.apiKey;
+        delete companyData.thermokingConfig.apiSecret;
+      }
+    }
+
+    // 4. Return company settings with signed logo URL
     res.json({ success: true, data: companyData });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

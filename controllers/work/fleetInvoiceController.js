@@ -295,7 +295,7 @@ export const createFleetInvoice = async (req, res) => {
     let totalTaxAmount = 0;
 
     const processedItems = items.map((item) => {
-      const quantity = Number(item.quantity || item.qty || 1);
+      const quantity = Number(item.quantity ?? item.qty ?? 1) || 0; // decimals allowed (labour hours)
       const unitPrice = Number(item.unitPrice || item.rate || 0);
       const totalPrice = quantity * unitPrice;
       subtotal += totalPrice;
@@ -316,6 +316,8 @@ export const createFleetInvoice = async (req, res) => {
         productService: item.productService || null,
         description: item.description || '',
         
+        itemType: ['part', 'labour', 'service', 'item'].includes(item.itemType) ? item.itemType : 'item',
+        productName: item.productName || null,
         quantity: quantity,
         unitPrice: unitPrice,
         totalPrice: totalPrice,
@@ -361,6 +363,10 @@ export const createFleetInvoice = async (req, res) => {
       dueDate: req.body.dueDate ? new Date(req.body.dueDate) : new Date(),
       messageOnInvoice: req.body.messageOnInvoice || null,
       notes: req.body.notes || null,
+      unitNumber: req.body.unitNumber || null,
+      unitMakeModel: req.body.unitMakeModel || null,
+      unitVin: req.body.unitVin || null,
+      unitOdometer: req.body.unitOdometer || null,
       ...(companyId && { company: companyId })
     };
 
@@ -406,7 +412,7 @@ export const updateFleetInvoice = async (req, res) => {
       let totalTaxAmount = 0;
 
       const processedItems = req.body.items.map((item) => {
-        const quantity = Number(item.quantity || item.qty || 1);
+        const quantity = Number(item.quantity ?? item.qty ?? 1) || 0; // decimals allowed (labour hours)
         const unitPrice = Number(item.unitPrice || item.rate || 0);
         const totalPrice = quantity * unitPrice;
         subtotal += totalPrice;
@@ -423,6 +429,8 @@ export const updateFleetInvoice = async (req, res) => {
           serviceDate: item.serviceDate || null,
           productService: item.productService || null,
           description: item.description || '',
+          itemType: ['part', 'labour', 'service', 'item'].includes(item.itemType) ? item.itemType : 'item',
+          productName: item.productName || null,
           quantity: quantity,
           unitPrice: unitPrice,
           totalPrice: totalPrice,

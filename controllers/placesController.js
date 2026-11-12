@@ -30,18 +30,22 @@ export const getPlaceTextSearch = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
     // Build Text Search API URL
     let textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query.trim())}&key=${googleMapsApiKey}`;
     
-    // Add location bias for better results
+    // Add location bias for better results. With no explicit bias, default to Canada,
+    // since the fleet operates in Canada/USA (otherwise e.g. "Headingley" resolves to Leeds, UK).
     if (location) {
       textSearchUrl += `&location=${encodeURIComponent(location)}`;
+    } else {
+      textSearchUrl += `&region=ca`;
     }
     
     // Add radius if provided
@@ -217,9 +221,10 @@ export const getPlaceAutocomplete = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
@@ -279,7 +284,7 @@ export const getPlaceAutocomplete = async (req, res) => {
       
       try {
         // Import the text search function (or call it directly)
-        const textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(originalInput)}&key=${googleMapsApiKey}&type=address`;
+        const textSearchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(originalInput)}&key=${googleMapsApiKey}&type=address&region=ca`;
         
         const textSearchResponse = await fetch(textSearchUrl);
         if (textSearchResponse.ok) {
@@ -426,9 +431,10 @@ export const getPlaceDetails = async (req, res) => {
     }
     
     if (!googleMapsApiKey) {
-      return res.status(500).json({
+      // 503: the service isn't set up (not a server crash); the address box falls back to its free search
+      return res.status(503).json({
         success: false,
-        message: 'Google Maps API key is not configured'
+        message: 'Address search is not set up yet (Google Maps API key missing)'
       });
     }
 
