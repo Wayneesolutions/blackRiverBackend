@@ -322,7 +322,7 @@ adminRoute.post(
 adminRoute.get(
   '/company',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accounts', 'accountant', 'driver', 'safety officer'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accounts', 'accountant', 'driver', 'safety officer', 'Maintenance Crew (Mechanics)'),
   getCompanySettings
 )
 
@@ -420,19 +420,19 @@ adminRoute.get(
 adminRoute.get(
   '/spareparts/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   getSparePartById
 )
 adminRoute.post(
   '/spareparts',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   createSparePart
 )
 adminRoute.put(
   '/spareparts/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   updateSparePart
 )
 adminRoute.delete(
@@ -444,7 +444,7 @@ adminRoute.delete(
 adminRoute.put(
   '/spareparts/:id/use',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   useSparePart
 )
 
@@ -453,19 +453,19 @@ adminRoute.put(
 adminRoute.get(
   '/suppliers',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   getSuppliers
 )
 adminRoute.get(
   '/suppliers/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   getSupplierById
 )
 adminRoute.post(
   '/suppliers',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   createSupplier
 )
 adminRoute.put(
@@ -486,7 +486,7 @@ adminRoute.delete(
 adminRoute.post(
   '/fleet-invoices/upload-extract',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   FileUploadMemory.single('file'),
   uploadAndExtractFleetInvoice
 )
@@ -495,43 +495,43 @@ adminRoute.post(
 adminRoute.get(
   '/fleet-invoices',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant', 'Maintenance Crew (Mechanics)'),
   getFleetInvoices
 )
 adminRoute.get(
   '/fleet-invoices/summary',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant', 'Maintenance Crew (Mechanics)'),
   getFleetInvoiceSummary
 )
 adminRoute.get(
   '/fleet-invoices/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'accountant', 'Maintenance Crew (Mechanics)'),
   getFleetInvoiceById
 )
 adminRoute.post(
   '/fleet-invoices',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   createFleetInvoice
 )
 adminRoute.put(
   '/fleet-invoices/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   updateFleetInvoice
 )
 adminRoute.patch(
   '/fleet-invoices/:id/status',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   updateFleetInvoiceStatus
 )
 adminRoute.post(
   '/fleet-invoices/:id/email',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   emailFleetInvoice
 )
 adminRoute.delete(
@@ -1018,7 +1018,7 @@ adminRoute.delete(
 adminRoute.get(
   '/fleet-maintenance/general-repairs',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Maintenance Crew (Mechanics)'),
   listGeneralRepairs
 );
 

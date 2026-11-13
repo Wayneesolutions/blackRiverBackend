@@ -1,7 +1,9 @@
 import { VehicleService } from "../../models/driver/vehicleService.js";
 import { Vehicle } from "../../models/driver/vehicleModel.js";
 import { FleetUnit } from "../../models/fleet/fleetUnitModel.js";
+import { GeneralRepair } from "../../models/fleet/generalRepairModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { logCompletedServiceAsMaintenanceOrder } from "../../utils/serviceToMaintenanceOrder.js";
 
 // Service intervals in KM (when to schedule next service)
 const SERVICE_INTERVALS = {
@@ -349,6 +351,11 @@ export const updateVehicleService = async (req, res) => {
     }).populate("vehicleId", "internalId plateNumber model make year vinNumber status odometer");
 
     console.log("✅ Service updated successfully:", id);
+
+    // Completed task → log it in the Maintenance Orders Log
+    if (status === "completed" && existingService.status !== "completed") {
+      await logCompletedServiceAsMaintenanceOrder(updatedService, req.user);
+    }
     
     // Ensure amount is included in response even if null
     const responseData = updatedService.toObject();
@@ -417,11 +424,18 @@ export const updateServiceStatus = async (req, res) => {
     }
 
     // Update service status
+    const previousStatus = updatedService.status;
     updatedService.status = status;
     await updatedService.save();
 
+    // Completed task → log it in the Maintenance Orders Log
+    if (status === "completed" && previousStatus !== "completed") {
+      await logCompletedServiceAsMaintenanceOrder(updatedService, req.user);
+    }
+
     // ✅ If service is completed, update vehicle's lastService and serviceHistory
-    if (status === "completed") {
+    // (services created from fleet units have no linked vehicle — skip in that case)
+    if (status === "completed" && updatedService.vehicleId && typeof updatedService.vehicleId === "object") {
       const vehicle = updatedService.vehicleId;
       const serviceType = updatedService.serviceType;
       const currentOdometer = vehicle.odometer || 0;
@@ -591,6 +605,13 @@ export const listVehicleServices = async (req, res) => {
       : [];
     
     const fleetUnitsMap = new Map(fleetUnits.map(fu => [fu.unitNo, fu]));
+
+    // Completed services that were logged in the Maintenance Orders Log
+    const completedIds = services.filter(s => s.status === "completed").map(s => s._id);
+    const loggedOrders = completedIds.length > 0
+      ? await GeneralRepair.find({ sourceServiceId: { $in: completedIds } }).select("_id sourceServiceId").lean()
+      : [];
+    const loggedOrderMap = new Map(loggedOrders.map(o => [String(o.sourceServiceId), o._id]));
     
     // Ensure all services have consistent structure with all fields
     const formattedServices = services.map(service => {
@@ -638,6 +659,7 @@ export const listVehicleServices = async (req, res) => {
         externalMechanicPhone: service.externalMechanicPhone || null,
         externalMechanicEmail: service.externalMechanicEmail || null,
         company: service.company,
+        maintenanceOrderId: loggedOrderMap.get(String(service._id)) || null,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
         __v: service.__v

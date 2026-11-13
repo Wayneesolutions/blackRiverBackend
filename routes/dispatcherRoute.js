@@ -550,7 +550,7 @@ dispatcherRoute.post(
 dispatcherRoute.get(
   '/trailer',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
   getAllTrailers
 )
 
@@ -710,7 +710,7 @@ dispatcherRoute.post(
 dispatcherRoute.get(
   '/vehicle',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'accountant', 'Fleet Maintenance Manager', 'Compliance Manager', 'Maintenance Crew (Mechanics)'),
   getVehicles
 )
 dispatcherRoute.get(

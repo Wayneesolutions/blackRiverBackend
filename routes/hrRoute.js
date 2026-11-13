@@ -580,19 +580,19 @@ hrRoute.post(
 hrRoute.get(
   '/fleet-maintenance/customers',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator', 'Maintenance Crew (Mechanics)'),
   getAllFleetCustomers
 );
 hrRoute.get(
   '/fleet-maintenance/customers/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator', 'Maintenance Crew (Mechanics)'),
   getFleetCustomerById
 );
 hrRoute.post(
   '/fleet-maintenance/customers',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant', 'dispatcher', 'operator', 'Maintenance Crew (Mechanics)'),
   createFleetCustomer
 );
 hrRoute.put(
