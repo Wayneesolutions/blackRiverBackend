@@ -2505,9 +2505,23 @@ export const updateEmployeePortals = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid portals array' });
     }
 
-    const employee = await User.findByIdAndUpdate(
-      id,
-      { portals },
+    // HR may grant access to others, not to themselves
+    const requesterId = String(req.user?._id || req.user?.id || '');
+    if (req.user?.role === 'hr' && requesterId === String(id)) {
+      return res.status(403).json({ success: false, message: 'Your own portal access is set by the company admin' });
+    }
+
+    // Only employees of the requester's own company (before: any user id was accepted)
+    const filter = { _id: id, role: { $nin: ['admin', 'superadmin', 'driver'] } };
+    if (req.user?.role !== 'superadmin') {
+      const companyId = getUserCompanyId(req.user);
+      if (!companyId) return res.status(403).json({ success: false, message: 'No company assigned' });
+      filter.company = companyId;
+    }
+
+    const employee = await User.findOneAndUpdate(
+      filter,
+      { portals: [...new Set(portals)] },
       { new: true, select: '_id name email role portals' }
     );
 

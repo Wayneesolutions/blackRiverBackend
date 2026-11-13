@@ -2,6 +2,7 @@ import { UserSession } from "../models/hr/userSessionModel.js";
 import { Attendance } from "../models/hr/attendanceModel.js";
 import { User } from "../models/driver/userModel.js";
 import mongoose from "mongoose";
+import { localHHmm, attendanceDateFor, endOfLocalDay, isSameLocalDay } from "../utils/companyTime.js";
 
 /**
  * Roles auto-tracked at login (session created on login)
@@ -19,7 +20,10 @@ const AUTO_TRACKED_ROLES = [
  */
 const MANUAL_TRACKED_ROLES = [
   'accountant',
-  'Maintenance Crew (Mechanics)'
+  'Maintenance Crew (Mechanics)',
+  // The company admin also has the Start Work / Break widget; their time was recorded in a
+  // session but never shown in Attendance. They now show like any manual-start employee.
+  'admin'
 ];
 
 const TRACKED_ROLES = [...AUTO_TRACKED_ROLES, ...MANUAL_TRACKED_ROLES];
@@ -65,7 +69,7 @@ export const recordLogin = async (userId, companyId) => {
 
     if (recentLogout && recentLogout.logoutTime) {
       const timeSinceLogout = (now - new Date(recentLogout.logoutTime)) / (1000 * 60); // minutes
-      const sameDay = new Date(recentLogout.logoutTime).toDateString() === now.toDateString();
+      const sameDay = isSameLocalDay(recentLogout.logoutTime, now);
 
       // Merge only within 30 minutes AND on the same calendar day
       if (timeSinceLogout <= 30 && sameDay) {
@@ -186,19 +190,18 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
     await activeSession.save();
 
     // Create or update attendance record
-    const attendanceDate = new Date(loginTime);
-    attendanceDate.setHours(0, 0, 0, 0);
-    
-    const checkInTime = loginTime.toTimeString().slice(0, 5); // HH:mm format
+    // Calendar day and clock times in the company's time zone (server runs in UTC)
+    const attendanceDate = attendanceDateFor(loginTime);
+
+    const checkInTime = localHHmm(loginTime); // HH:mm local
     // The attendance record belongs to the login day. If the session ran past midnight
     // (logout days later, day-boundary job missed), only credit time up to the end of
     // that day — otherwise a 3-day-old session shows up as "73 hrs" in one day.
-    const endOfLoginDay = new Date(attendanceDate);
-    endOfLoginDay.setHours(23, 59, 59, 999);
+    const endOfLoginDay = endOfLocalDay(loginTime);
     const sessionCrossedMidnight = now > endOfLoginDay;
     const minutesUntilEndOfDay = Math.max(0, (endOfLoginDay - loginTime) / (1000 * 60));
     const creditedMinutes = Math.min(activeMinutes, minutesUntilEndOfDay);
-    const checkOutTime = sessionCrossedMidnight ? '23:59' : now.toTimeString().slice(0, 5); // HH:mm format
+    const checkOutTime = sessionCrossedMidnight ? '23:59' : localHHmm(now); // HH:mm local
     const totalHours = creditedMinutes / 60;
 
     // Always mark as "present" for auto-tracked attendance from login
@@ -329,10 +332,10 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
 export const closeDayBoundarySession = async (session) => {
   try {
     const loginTime = new Date(session.loginTime);
-    const sessionDay = new Date(loginTime);
-    sessionDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(sessionDay);
-    endOfDay.setHours(23, 59, 59, 999);
+    // Local calendar day of the session (stored as UTC midnight), and the real instant it ends
+    const sessionDay = attendanceDateFor(loginTime);
+    const endOfDay = endOfLocalDay(loginTime);
+    const sessionDayEnd = new Date(sessionDay.getTime() + 24 * 3600 * 1000 - 1);
 
     // Cap any open breaks at end of day, sum total break time
     const totalBreakMs = (session.breaks || []).reduce((sum, b) => {
@@ -350,13 +353,13 @@ export const closeDayBoundarySession = async (session) => {
       totalActiveMinutes: activeMinutes
     });
 
-    const checkInTime = loginTime.toTimeString().slice(0, 5);
+    const checkInTime = localHHmm(loginTime);
     const checkOutTime = '23:59';
     const totalHours = activeMinutes / 60;
 
     const filter = session.company
-      ? { company: session.company, employee: session.user, date: { $gte: sessionDay, $lte: endOfDay } }
-      : { employee: session.user, date: { $gte: sessionDay, $lte: endOfDay } };
+      ? { company: session.company, employee: session.user, date: { $gte: sessionDay, $lte: sessionDayEnd } }
+      : { employee: session.user, date: { $gte: sessionDay, $lte: sessionDayEnd } };
 
     const existing = await Attendance.findOne(filter);
     if (existing) {

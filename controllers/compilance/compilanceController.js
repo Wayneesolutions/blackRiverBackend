@@ -3663,7 +3663,7 @@ const generateIncidentFileSignedUrl = async (fileName, fileType = 'image') => {
 // ✅ Incident - Get All Incidents
 export const getIncidents = async (req, res) => {
   try {
-    const { status, type, location, driver, search, page = 1, limit = 50, sortBy = 'incidentDateTime', sortOrder = 'desc' } = req.query;
+    const { status, type, location, driver, search, country, page = 1, limit = 50, sortBy = 'incidentDateTime', sortOrder = 'desc' } = req.query;
     const query = {};
 
     const companyId = getUserCompanyId(req.user);
@@ -3696,11 +3696,13 @@ export const getIncidents = async (req, res) => {
       query.incidentType = type;
     }
 
+    // Location and search are separate conditions; before, search replaced the location filter
+    const andConditions = [];
     if (location && location !== 'all') {
-      query.$or = [
+      andConditions.push({ $or: [
         { 'location.stateProvince': location },
         { 'location.city': location }
-      ];
+      ] });
     }
 
     if (driver && driver !== 'all') {
@@ -3708,15 +3710,41 @@ export const getIncidents = async (req, res) => {
     }
 
     if (search) {
-      query.$or = [
-        { incidentNumber: { $regex: search, $options: 'i' } },
-        { incidentType: { $regex: search, $options: 'i' } },
-        { caseFileNumber: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { 'location.city': { $regex: search, $options: 'i' } },
-        { 'location.stateProvince': { $regex: search, $options: 'i' } }
-      ];
+      const rx = { $regex: escapeRegex(search), $options: 'i' };
+      andConditions.push({ $or: [
+        { incidentNumber: rx },
+        { incidentType: rx },
+        { caseFileNumber: rx },
+        { description: rx },
+        { 'location.city': rx },
+        { 'location.stateProvince': rx }
+      ] });
     }
+    if (andConditions.length) query.$and = andConditions;
+
+    // Counts for the All / Canada / USA tabs (same filters, any country)
+    // aggregate() does not cast ids like find() does
+    const countMatch = { ...query };
+    if (countMatch.driver && normalizeToObjectId(countMatch.driver)) countMatch.driver = normalizeToObjectId(countMatch.driver);
+    const countryCountsAgg = await Incident.aggregate([
+      { $match: countMatch },
+      { $group: { _id: { $toLower: { $ifNull: ['$location.country', ''] } }, n: { $sum: 1 } } }
+    ]);
+    const countryCounts = { all: 0, canada: 0, usa: 0 };
+    countryCountsAgg.forEach((c) => {
+      countryCounts.all += c.n;
+      if (c._id === 'canada' || c._id === 'ca') countryCounts.canada += c.n;
+      if (c._id === 'usa' || c._id === 'us' || c._id === 'united states') countryCounts.usa += c.n;
+    });
+
+    // Canada / USA tab: before, this filter was never applied, so both tabs showed every accident
+    if (country && country !== 'all') {
+      const c = String(country).toLowerCase();
+      query['location.country'] = c === 'canada'
+        ? { $in: ['canada', 'Canada', 'CANADA', 'ca', 'CA'] }
+        : { $in: ['usa', 'USA', 'Usa', 'us', 'US', 'united states', 'United States'] };
+    }
+
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const sortOptions = {};
@@ -3798,6 +3826,7 @@ export const getIncidents = async (req, res) => {
     }));
 
     res.json({
+      countryCounts,
       success: true,
       message: "Incidents fetched successfully",
       data: incidentsWithSignedUrls,

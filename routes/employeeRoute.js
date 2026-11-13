@@ -127,7 +127,7 @@ employeeRoute.delete(
 employeeRoute.patch(
     "/:id/portals",
     authMiddleware,
-    authorizeRoles('admin', 'superadmin'),
+    authorizeRoles('admin', 'superadmin', 'hr'), // HR manages staff access; they cannot change their own (checked in the controller)
     updateEmployeePortals
 );
 
