@@ -5,6 +5,9 @@ import { User } from '../../models/driver/userModel.js';
 import { getUserCompanyId } from '../../utils/companyFilter.js';
 import mongoose from 'mongoose';
 import { generateDocumentSignedUrl } from './compilanceController.js';
+import { Incident } from '../../models/incidentModel.js';
+
+const normalizeObjectId = (v) => (mongoose.Types.ObjectId.isValid(v) ? new mongoose.Types.ObjectId(String(v)) : null);
 
 // Helper to extract real ID from prefixed IDs
 const extractRealId = (prefixedId) => {
@@ -46,6 +49,34 @@ const findVehicleById = async (vehicleId, companyId) => {
 };
 
 // Adds `documentLinks` (name + viewable URL) next to the stored document keys
+
+// ---- Country (Canada / USA tabs) ----
+const normalizeCountry = (v) => {
+  const c = String(v || '').trim().toLowerCase();
+  if (['canada', 'ca', 'can'].includes(c)) return 'canada';
+  if (['usa', 'us', 'united states', 'united states of america'].includes(c)) return 'usa';
+  return null;
+};
+
+const PROVINCES = ['manitoba', 'ontario', 'quebec', 'québec', 'alberta', 'saskatchewan', 'british columbia', 'nova scotia',
+  'new brunswick', 'newfoundland', 'prince edward island', 'yukon', 'nunavut', 'northwest territories',
+  ' mb', ' on', ' qc', ' ab', ' sk', ' bc', ' ns', ' nb', ' nl', ' pe', ' yt', ' nu', ' nt', 'canada', 'winnipeg'];
+const STATES = ['alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware', 'florida',
+  'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland',
+  'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire',
+  'new jersey', 'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania',
+  'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia', 'washington',
+  'west virginia', 'wisconsin', 'wyoming', 'usa', 'united states'];
+
+/** Best guess from a free-text location such as "Hwy 1, Brandon, MB" or "Fargo, North Dakota". */
+const guessCountryFromText = (text) => {
+  const t = ` ${String(text || '').toLowerCase().replace(/[,.]/g, ' ')} `;
+  if (!t.trim()) return null;
+  if (STATES.some((s) => t.includes(` ${s} `))) return 'usa';
+  if (PROVINCES.some((p) => t.includes(p.startsWith(' ') ? `${p} ` : ` ${p} `))) return 'canada';
+  return null;
+};
+
 const attachDocumentLinks = async (claim) => {
   if (!claim || !Array.isArray(claim.documents) || claim.documents.length === 0) {
     if (claim) claim.documentLinks = [];
@@ -90,6 +121,7 @@ export const createInsuranceClaim = async (req, res) => {
       adjusterContact,
       description,
       location,
+      country,
       notes
     } = req.body;
 
@@ -167,6 +199,7 @@ export const createInsuranceClaim = async (req, res) => {
       adjusterContact: adjusterContact || '',
       description,
       location: location || '',
+      country: normalizeCountry(country) || guessCountryFromText(location) || undefined,
       notes: notes || '',
       company: new mongoose.Types.ObjectId(companyId),
       createdBy: req.user.id
@@ -258,6 +291,22 @@ export const getInsuranceClaims = async (req, res) => {
       .lean();
 
     await Promise.all(claims.map(attachDocumentLinks));
+
+    // Older claims have no country: take it from the linked accident, else from the location text.
+    // `countryIsGuess` tells the page to show it as unconfirmed until someone saves the claim.
+    const unknown = claims.filter((c) => !c.country);
+    if (unknown.length) {
+      const accidentNumbers = [...new Set(unknown.map((c) => c.accidentNumber).filter(Boolean))];
+      const accidents = accidentNumbers.length
+        ? await Incident.find({ company: { $in: [companyId, normalizeObjectId(companyId)].filter(Boolean) }, incidentNumber: { $in: accidentNumbers } })
+            .select('incidentNumber location.country').lean()
+        : [];
+      const byNumber = new Map(accidents.map((a) => [a.incidentNumber, normalizeCountry(a.location?.country)]));
+      unknown.forEach((c) => {
+        const guess = byNumber.get(c.accidentNumber) || guessCountryFromText(c.location);
+        if (guess) { c.country = guess; c.countryIsGuess = true; }
+      });
+    }
 
     res.json({
       success: true,
@@ -375,6 +424,7 @@ export const updateInsuranceClaim = async (req, res) => {
       adjusterContact,
       description,
       location,
+      country,
       notes
     } = req.body;
 
@@ -436,6 +486,7 @@ export const updateInsuranceClaim = async (req, res) => {
     if (adjusterContact !== undefined) claim.adjusterContact = adjusterContact;
     if (description) claim.description = description;
     if (location !== undefined) claim.location = location;
+    if (country !== undefined) claim.country = normalizeCountry(country) || undefined;
     if (notes !== undefined) claim.notes = notes;
 
     // Remove documents the user deleted (JSON list of stored keys)

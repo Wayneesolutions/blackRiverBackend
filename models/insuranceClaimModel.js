@@ -86,6 +86,12 @@ const insuranceClaimSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // Canada / USA tab on the Insurance Claims page
+  country: {
+    type: String,
+    enum: ['canada', 'usa'],
+    lowercase: true
+  },
   notes: {
     type: String
   },

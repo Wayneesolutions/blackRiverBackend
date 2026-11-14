@@ -3,6 +3,7 @@ import { User } from "../../models/driver/userModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { UserSession } from "../../models/hr/userSessionModel.js";
 import { closeDayBoundarySession, shouldAutoTrackLogin } from "../../services/attendanceTrackingService.js";
+import { attendanceDateFor, localDayKey, localHHmm } from "../../utils/companyTime.js";
 
 const toStartOfDay = (d) => new Date(new Date(d).setHours(0,0,0,0));
 
@@ -22,23 +23,21 @@ export const listAttendance = async (req, res) => {
     }
     
     // Filter by specific date (YYYY-MM-DD format)
+    // Attendance dates are stored as UTC midnight of the calendar day
     if (date) {
-      const dateObj = new Date(date);
-      dateObj.setHours(0, 0, 0, 0);
-      const endDate = new Date(dateObj);
-      endDate.setHours(23, 59, 59, 999);
+      const dateObj = new Date(`${String(date).slice(0, 10)}T00:00:00.000Z`);
+      const endDate = new Date(dateObj.getTime() + 24 * 3600 * 1000 - 1);
       filter.date = { $gte: dateObj, $lte: endDate };
     } else if (month && year) {
       // Filter by month and year
-      const start = new Date(Number(year), Number(month) - 1, 1);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(Number(year), Number(month), 0, 23, 59, 59, 999);
+      const start = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+      const end = new Date(Date.UTC(Number(year), Number(month), 1) - 1);
       filter.date = { $gte: start, $lte: end };
     }
     
     const trackedRoles = [
       'hr', 'dispatcher', 'Fleet Maintenance Manager', 'safety officer', 'Compliance Manager',
-      'accountant', 'Maintenance Crew (Mechanics)'
+      'accountant', 'Maintenance Crew (Mechanics)', 'admin'
     ];
     
     const data = await Attendance.find(filter)
@@ -74,20 +73,16 @@ export const listAttendance = async (req, res) => {
       try {
         const { UserSession } = await import("../../models/hr/userSessionModel.js");
         
-        // Get today's date for filtering active sessions
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        
-        // Find active sessions for today
-        const sessionFilter = {
-          isActive: true,
-          loginTime: { $gte: today }
-        };
-        
+        // Everyone with an open work session is present right now. Before, only sessions that
+        // started after midnight *UTC* counted, so from 6-7 pm Winnipeg time nobody showed.
+        const todayKey = localDayKey(new Date());
+        const today = attendanceDateFor(new Date());
+        const sessionFilter = { isActive: true };
+
         if (companyId) {
           sessionFilter.company = companyId;
         }
-        
+
         const activeSessions = await UserSession.find(sessionFilter)
           .populate({
             path: "user",
@@ -95,28 +90,34 @@ export const listAttendance = async (req, res) => {
             match: { role: { $in: trackedRoles } }
           })
           .lean();
-        
+
         // Convert active sessions to attendance-like format
         activeSessions.forEach(session => {
           if (session.user) {
             const loginTime = new Date(session.loginTime);
             const now = new Date();
             const elapsedMinutes = (now - loginTime) / (1000 * 60);
-            const elapsedHours = elapsedMinutes / 60;
+            const elapsedHours = Math.min(24, elapsedMinutes / 60);
             
             // Check if there's already an attendance record for this user today
             const existingRecord = formattedData.find(
-              record => record.employee._id.toString() === session.user._id.toString() &&
-              new Date(record.date).toDateString() === today.toDateString()
+              record => record.employee?._id?.toString() === session.user._id.toString() &&
+              new Date(record.date).toISOString().slice(0, 10) === todayKey
             );
+            if (existingRecord) {
+              // Still working: show them as currently in, not checked out
+              existingRecord.isActiveSession = true;
+              existingRecord.notes = existingRecord.notes || 'Currently logged in';
+            }
             
-            if (!existingRecord) {
+            const todayInRange = !filter.date || (today >= filter.date.$gte && today <= filter.date.$lte);
+            if (!existingRecord && todayInRange) {
               // Add active session as a temporary attendance record
               formattedData.unshift({
                 _id: `session-${session._id}`,
                 employee: session.user,
                 date: today,
-                checkIn: loginTime.toTimeString().slice(0, 5),
+                checkIn: localHHmm(loginTime),
                 checkOut: null, // Still active
                 status: 'present',
                 totalHours: elapsedHours,
@@ -325,12 +326,8 @@ export const getCurrentSession = async (req, res) => {
     if (!session) return res.json({ success: true, data: null });
 
     // Check if this session belongs to a previous calendar day
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const sessionDay = new Date(session.loginTime);
-    sessionDay.setHours(0, 0, 0, 0);
-
-    if (sessionDay < today) {
+    // Compare calendar days in the company's time zone, not the server's UTC clock
+    if (localDayKey(session.loginTime) < localDayKey(new Date())) {
       // Close yesterday's session and create its attendance record
       await closeDayBoundarySession(session);
 
