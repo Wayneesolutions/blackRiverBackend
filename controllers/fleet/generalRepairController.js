@@ -3,6 +3,7 @@ import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
 import { FleetUnit } from "../../models/fleet/fleetUnitModel.js";
 import { User } from "../../models/driver/userModel.js";
+import { VehicleService } from "../../models/driver/vehicleService.js";
 import mongoose from "mongoose";
 import nodemailer from "nodemailer";
 
@@ -696,13 +697,17 @@ export const listMechanicOrders = async (req, res) => {
   }
 };
 
-// ✅ Get mechanic dashboard stats (monthly)
+// ✅ Get mechanic dashboard stats
+// Counts both kinds of assigned work:
+//   - scheduled services (VehicleService.assignedMechanic)
+//   - maintenance orders (GeneralRepair.serviceProviderId)
+// Open work is shown regardless of month; completed work is counted for the selected month.
 export const getMechanicDashboard = async (req, res) => {
   try {
     const { companyId, isSuperadmin } = ensureCompanyContext(req);
-    const mechanicId = req.user?._id;
+    const userId = req.user?._id;
 
-    if (!mechanicId) {
+    if (!userId) {
       return res.status(401).json({
         success: false,
         message: "User ID not found in token"
@@ -720,67 +725,53 @@ export const getMechanicDashboard = async (req, res) => {
 
     const isMechanic = req.user?.role === "Maintenance Crew (Mechanics)";
 
-    const baseFilter = {};
-    if (companyId) {
-      baseFilter.company = companyId;
-    } else if (!isSuperadmin) {
-      return res.json({
-        success: true,
-        data: {
-          total: 0,
-          completed: 0,
-          pending: 0,
-          completionRate: 0,
-          myAssigned: 0,
-          myCompleted: 0,
-          myPending: 0,
-          totalRepairAmount: 0,
-          avgRepairCost: 0,
-          recentOrders: []
-        }
-      });
-    }
-
-    const monthFilter = {
-      serviceDate: { $gte: startOfMonth, $lte: endOfMonth }
+    const emptyData = {
+      total: 0,
+      completed: 0,
+      pending: 0,
+      completionRate: 0,
+      myAssigned: 0,
+      myCompleted: 0,
+      myPending: 0,
+      totalRepairAmount: 0,
+      avgRepairCost: 0,
+      recentOrders: []
     };
 
-    let statsFilter = { ...baseFilter, ...monthFilter };
-    if (isMechanic) {
-      statsFilter.serviceProviderId = mechanicId;
+    if (!companyId && !isSuperadmin) {
+      return res.json({ success: true, data: emptyData });
     }
 
-    const total = await GeneralRepair.countDocuments(statsFilter);
-    const completed = await GeneralRepair.countDocuments({
-      ...statsFilter,
-      status: "completed"
-    });
-    const pending = await GeneralRepair.countDocuments({
-      ...statsFilter,
-      status: { $in: ["Created", "Assigned", "Shared", "in-progress"] }
-    });
+    const companyFilter = companyId ? { company: companyId } : {};
+    const OPEN_ORDER_STATUSES = ["Created", "Assigned", "Shared", "in-progress"];
+
+    // Maintenance orders (exclude ones auto-logged from services so open work isn't double counted)
+    const orderFilter = { ...companyFilter };
+    if (isMechanic) orderFilter.serviceProviderId = userId;
+
+    // Scheduled services
+    const serviceFilter = { ...companyFilter };
+    if (isMechanic) serviceFilter.assignedMechanic = String(userId);
+
+    const completedInMonth = {
+      $or: [
+        { completionDate: { $gte: startOfMonth, $lte: endOfMonth } },
+        { completionDate: null, serviceDate: { $gte: startOfMonth, $lte: endOfMonth } }
+      ]
+    };
+
+    const [openOrders, openServices, completedOrders] = await Promise.all([
+      GeneralRepair.countDocuments({ ...orderFilter, sourceServiceId: null, status: { $in: OPEN_ORDER_STATUSES } }),
+      VehicleService.countDocuments({ ...serviceFilter, status: { $in: ["pending", "in-progress"] } }),
+      GeneralRepair.find({ ...orderFilter, status: "completed", ...completedInMonth })
+        .select("completionTotalAmount")
+        .lean()
+    ]);
+
+    const pending = openOrders + openServices;
+    const completed = completedOrders.length;
+    const total = pending + completed;
     const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-    let myAssigned = 0;
-    let myCompleted = 0;
-    let myPending = 0;
-    if (isMechanic) {
-      myAssigned = total;
-      myCompleted = completed;
-      myPending = pending;
-    } else {
-      // Admin / Fleet Maintenance Manager: show company-wide workload (all orders in month)
-      myAssigned = total;
-      myCompleted = completed;
-      myPending = pending;
-    }
-
-    const completedOrders = await GeneralRepair.find({
-      ...statsFilter,
-      status: "completed"
-    })
-      .select("completionTotalAmount")
-      .lean();
 
     const totalRepairAmount = completedOrders.reduce(
       (sum, o) => sum + (Number(o.completionTotalAmount) || 0),
@@ -788,15 +779,49 @@ export const getMechanicDashboard = async (req, res) => {
     );
     const avgRepairCost = completed > 0 ? Math.round(totalRepairAmount / completed) : 0;
 
-    const recentFilter = { ...baseFilter };
-    if (isMechanic) {
-      recentFilter.serviceProviderId = mechanicId;
-    }
-    const recentOrders = await GeneralRepair.find(recentFilter)
-      .sort({ serviceDate: -1, createdAt: -1 })
-      .limit(5)
-      .select("_id unitNumber description status serviceDate completionDate")
-      .lean();
+    // Recent activity: latest maintenance orders + open scheduled services
+    const [recentRepairs, recentServices] = await Promise.all([
+      GeneralRepair.find(orderFilter)
+        .sort({ updatedAt: -1 })
+        .limit(5)
+        .select("_id unitNumber description status serviceDate completionDate updatedAt")
+        .lean(),
+      VehicleService.find({ ...serviceFilter, status: { $in: ["pending", "in-progress"] } })
+        .sort({ updatedAt: -1 })
+        .limit(5)
+        .select("_id unitNumber serviceType description status serviceDate dueDate updatedAt")
+        .lean()
+    ]);
+
+    const toDateStr = (d) => {
+      if (!d) return null;
+      const date = d instanceof Date ? d : new Date(d);
+      return Number.isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
+    };
+
+    const recentOrders = [
+      ...recentRepairs.map((o) => ({
+        id: o._id,
+        type: "order",
+        unit: o.unitNumber,
+        description: o.description,
+        status: o.status,
+        date: toDateStr(o.completionDate || o.serviceDate),
+        sortKey: new Date(o.updatedAt || o.serviceDate || 0).getTime()
+      })),
+      ...recentServices.map((s) => ({
+        id: s._id,
+        type: "service",
+        unit: s.unitNumber,
+        description: s.description || s.serviceType,
+        status: s.status,
+        date: toDateStr(s.serviceDate || s.dueDate),
+        sortKey: new Date(s.updatedAt || s.dueDate || 0).getTime()
+      }))
+    ]
+      .sort((a, b) => b.sortKey - a.sortKey)
+      .slice(0, 5)
+      .map(({ sortKey, ...rest }) => rest);
 
     return res.json({
       success: true,
@@ -805,25 +830,12 @@ export const getMechanicDashboard = async (req, res) => {
         completed,
         pending,
         completionRate,
-        myAssigned,
-        myCompleted,
-        myPending,
+        myAssigned: total,
+        myCompleted: completed,
+        myPending: pending,
         totalRepairAmount,
         avgRepairCost,
-        recentOrders: recentOrders.map((o) => {
-          const d = o.completionDate || o.serviceDate || o.createdAt;
-          let dateStr = null;
-          if (d) {
-            dateStr = typeof d === "string" ? d.split("T")[0] : (d.toISOString ? d.toISOString().split("T")[0] : null);
-          }
-          return {
-            id: o._id,
-            unit: o.unitNumber,
-            description: o.description,
-            status: o.status,
-            date: dateStr
-          };
-        })
+        recentOrders
       }
     });
   } catch (error) {

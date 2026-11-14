@@ -150,6 +150,14 @@ const generalRepairSchema = new mongoose.Schema(
     },
     verifiedAt: {
       type: Date
+    },
+    // When a scheduled service (VehicleService) assigned to a mechanic is completed,
+    // a maintenance order is logged automatically and linked back here.
+    sourceServiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "VehicleService",
+      index: true,
+      default: null
     }
   },
   { timestamps: true }
