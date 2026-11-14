@@ -32,6 +32,8 @@ const hosAuditFormSchema = new mongoose.Schema({
   // True when the incident was an ELD malfunction (e.g. a mechanic moved the truck under the
   // driver's login). Recorded for the file but NOT counted as a driver HOS violation.
   eldMalfunction: { type: Boolean, default: false },
+  // Which malfunction (power, engine synchronization, timing, ...), picked on the form
+  eldMalfunctionType: { type: String, trim: true, default: '' },
   notes: { type: String, trim: true },
   auditorName: { type: String, trim: true },
   documents: [documentSchema],

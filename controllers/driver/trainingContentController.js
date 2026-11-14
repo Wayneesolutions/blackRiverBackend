@@ -146,6 +146,15 @@ export const getTrainingContent = async (req, res) => {
       query.assignedRoles = { $in: scope.role ? [scope.role] : scope.roles };
     } else if (role && role !== 'all') {
       query.assignedRoles = { $in: [role] };
+    } else if (req.user?.role === 'driver') {
+      // Drivers get driver training only: content uploaded in Driver Training Center has no
+      // assigned roles. Role-Based Training for office staff (dispatcher, accountant, ...)
+      // used to show up in the driver app as well.
+      query.$or = [
+        { assignedRoles: { $exists: false } },
+        { assignedRoles: { $size: 0 } },
+        { assignedRoles: 'driver' }
+      ];
     }
 
     const trainingContent = await TrainingContent.find(query)

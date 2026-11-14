@@ -26,7 +26,8 @@ import {
   normalizeLevel,
   normalizeSafetyRating,
   parseDocumentDate,
-  resolveInspectionCountry
+  resolveInspectionCountry,
+  countryFromInspectionPlace
 } from "../../utils/carrierProfileUtils.js";
 import fs from "fs";
 
@@ -1309,9 +1310,14 @@ export const createCvsaInspection = async (req, res) => {
       });
     }
 
+    // Client (14 Nov): inspections at "Texas, USA" showed on the Canada tab. When the
+    // location or jurisdiction clearly names a country, that country wins over the picked one.
+    const placeCountry = countryFromInspectionPlace({ jurisdiction, location });
+    const finalCountry = placeCountry || country;
+
     // Create inspection
     const inspection = new CvsaInspection({
-      country,
+      country: finalCountry,
       date: date ? new Date(date) : null,
       location,
       status,
@@ -1352,7 +1358,10 @@ export const createCvsaInspection = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "CVSA inspection created successfully",
+      message: finalCountry !== country
+        ? `CVSA inspection created. Filed under ${finalCountry === 'usa' ? 'USA' : 'Canada'} because the location is there.`
+        : "CVSA inspection created successfully",
+      countryCorrected: finalCountry !== country,
       data: populatedInspection
     });
   } catch (error) {
@@ -1462,6 +1471,15 @@ export const updateCvsaInspection = async (req, res) => {
     
     // Basic fields
     if (updateData.country !== undefined) updateFields.country = updateData.country;
+    if (updateData.country !== undefined || updateData.location !== undefined || updateData.jurisdiction !== undefined) {
+      // Keep the country in line with the location (see createCvsaInspection)
+      const current = await CvsaInspection.findOne(query).select('location jurisdiction country').lean();
+      const placeCountry = countryFromInspectionPlace({
+        jurisdiction: updateData.jurisdiction !== undefined ? updateData.jurisdiction : current?.jurisdiction,
+        location: updateData.location !== undefined ? updateData.location : current?.location
+      });
+      if (placeCountry) updateFields.country = placeCountry;
+    }
     if (updateData.date !== undefined) updateFields.date = updateData.date ? new Date(updateData.date) : null;
     if (updateData.location !== undefined) updateFields.location = updateData.location;
     if (updateData.status !== undefined) updateFields.status = updateData.status;
@@ -2368,11 +2386,16 @@ export const getCarrierPerformance = async (req, res) => {
     const latestImportFilter = {};
     if (!isSuperadmin) applyCompanyFilter(latestImportFilter, companyId);
     const lastImport = await CarrierProfileImport.findOne(latestImportFilter).sort({ createdAt: -1 }).lean();
+    // Inspections with no date cannot be placed in a month, so they are left out of every
+    // rate on this dashboard. Count them so the page can say so (client 14 Nov: figures
+    // here did not match the inspection list).
+    const undatedInspections = await CvsaInspection.countDocuments({ ...match, date: null });
 
     res.json({
       success: true,
       data: {
         country: country || 'all',
+        undatedInspections,
         monthlyData,
         summary: {
           totalRecords: monthlyData.filter((m) => m.totalInspections > 0).length,

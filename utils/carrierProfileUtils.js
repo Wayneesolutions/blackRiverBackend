@@ -44,9 +44,11 @@ export const resolveJurisdiction = (value) => {
 };
 
 /** Infers the country from a free-text location such as "Headingley, MB" or "Emerson Port". */
-const countryFromLocation = (location) => {
+export const countryFromLocation = (location) => {
   const text = clean(location);
   if (!text) return null;
+  // Places outside Canada/USA ("Headingley, Leeds, UK") must not match Canadian town names
+  if (/\b(uk|u\.k\.|united kingdom|england|scotland|wales|mexico)\b/i.test(text)) return null;
   // Trailing 2-letter code: "Brandon, MB", "Fargo ND". Only the last token is
   // trusted, since words like "IN" or "OR" appear in ordinary location text.
   const tokens = text.toUpperCase().split(/[\s,/()-]+/).filter(Boolean);
@@ -570,3 +572,11 @@ export const parseNscCarrierProfile = (text) => {
     }
   };
 };
+
+/**
+ * Country implied by an inspection's jurisdiction or location text ("Texas, USA" → usa,
+ * "Brandon, MB" → canada). Returns null when the text does not say.
+ * Used so an inspection typed in at a US location cannot be filed under Canada (and the reverse).
+ */
+export const countryFromInspectionPlace = ({ jurisdiction, location } = {}) =>
+  resolveJurisdiction(jurisdiction)?.country || countryFromLocation(location) || null;
