@@ -1851,6 +1851,10 @@ export const getDriversLastMessages = async (req, res) => {
               $cond: [
                 {
                   $and: [
+                    // Only the driver's own messages are "unread" for the office. Counting
+                    // messages sent by other staff showed badges on chats the office started
+                    // (client 14 Nov: "You/Office: hey" with 7 unread).
+                    { $eq: ['$senderType', 'driver'] },
                     { $ne: [{ $toString: '$senderId' }, userId.toString()] },
                     { $not: { $in: [userId.toString(), { $map: { input: { $ifNull: ['$readBy', []] }, as: 'r', in: { $toString: '$$r.userId' } } }] } }
                   ]

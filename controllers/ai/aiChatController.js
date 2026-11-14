@@ -1,4 +1,5 @@
 import { callOpenAI } from '../../services/openaiService.js';
+import { APP_GUIDE } from "../../utils/appGuide.js";
 import { User } from '../../models/driver/userModel.js';
 import Trip from '../../models/tripModel.js';
 import Order from '../../models/orderModel.js';
@@ -524,6 +525,8 @@ When answering about driver assignments, you can check if a driver ID is provide
 
 ${freeDrivers.length > 0 ? `\n\nFREE DRIVERS (Not assigned to any active trip):
 ${freeDrivers.map(d => `- ${d.name} (Internal ID: ${d.internalId || 'N/A'}, Email: ${d.email || 'N/A'})`).join('\n')}` : ''}
+
+${APP_GUIDE}
 
 Be helpful, concise, and accurate. If you don't have enough information to answer a question, say so clearly.`;
 

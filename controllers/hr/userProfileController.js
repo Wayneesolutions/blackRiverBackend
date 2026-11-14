@@ -238,7 +238,7 @@ export const getUserProfilesPortfolio = async (req, res) => {
     const userIds = employees.map((emp) => emp._id);
     const { startDate, endDate } = resolveDateRange(timeRange, customStart, customEnd);
 
-    let [payrollMap, attendanceMap] = await Promise.all([
+    const [payrollMap, attendanceMap] = await Promise.all([
       aggregatePayrollByUser({
         userIds,
         startDate,
@@ -253,33 +253,10 @@ export const getUserProfilesPortfolio = async (req, res) => {
       })
     ]);
 
-    if (userIds.length > 0) {
-      const missingPayrollIds = userIds.filter((id) => !payrollMap.has(id.toString()));
-      if (missingPayrollIds.length) {
-        const fallbackPayrollMap = await aggregatePayrollByUser({
-          userIds: missingPayrollIds,
-          companyId: normalizedCompanyId
-        });
-        fallbackPayrollMap.forEach((value, key) => {
-          if (!payrollMap.has(key)) {
-            payrollMap.set(key, value);
-          }
-        });
-      }
-
-      const missingAttendanceIds = userIds.filter((id) => !attendanceMap.has(id.toString()));
-      if (missingAttendanceIds.length) {
-        const fallbackAttendanceMap = await aggregateAttendanceByUser({
-          userIds: missingAttendanceIds,
-          companyId: normalizedCompanyId
-        });
-        fallbackAttendanceMap.forEach((value, key) => {
-          if (!attendanceMap.has(key)) {
-            attendanceMap.set(key, value);
-          }
-        });
-      }
-    }
+    // Client (14 Nov): Employee Portfolio showed earnings for people with 0 days and
+    // 73 hrs for 1 day. Employees with nothing in the chosen period used to be filled in
+    // with their all-time payroll/attendance, mixing periods. The period now shows only
+    // that period; an employee with no records in it shows zeros.
 
     const profiles = employees.map((employee) => {
       const id = employee._id.toString();
