@@ -609,8 +609,20 @@ export const deleteAdmin = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const admin = await User.findByIdAndDelete(id);
+    const admin = await User.findById(id).select('role');
     if (!admin) return res.status(404).json({success:false, message: "Admin not found" });
+    if (admin.role === 'superadmin') {
+      return res.status(403).json({ success: false, message: "A Super Admin account can't be deleted here" });
+    }
+
+    await User.findByIdAndDelete(id);
+
+    // A deleted customer's subscriptions stop counting as revenue: mark them cancelled.
+    // Paid ones keep paymentStatus 'paid' so the history stays accurate.
+    await Subscription.updateMany(
+      { admin: admin._id, status: { $ne: 'cancelled' } },
+      { $set: { status: 'cancelled', cancelledAt: new Date() } }
+    );
 
     res.json({success:true, message: "Admin deleted successfully" });
   } catch (err) {

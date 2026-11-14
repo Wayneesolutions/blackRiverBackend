@@ -233,6 +233,14 @@ app.post("/api/v1/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ success: false, message: "Incorrect password" });
 
+    // Super Admin has its own login page (/superadmin/login) and must not get into a customer panel
+    if (user.role === 'superadmin') {
+      return res.status(403).json({
+        success: false,
+        message: "Super Admin accounts sign in at the Super Admin login page."
+      });
+    }
+
     // Check admin subscription/trial access for all users (except superadmin)
     let subscriptionStatus = null;
     if (user.role !== 'superadmin') {

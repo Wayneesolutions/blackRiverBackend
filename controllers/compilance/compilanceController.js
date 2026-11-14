@@ -2482,16 +2482,32 @@ export const getTickets = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     let tickets = await Ticket.find(query)
-      .populate('driver', 'name email')
       .sort({ dateIssued: -1, createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
-    
+
+    // Fill in driver names without letting one bad driver id fail the whole list
+    // (the stats card counts tickets without this step, so a failure here used to
+    // show "9 tickets" on Compliance Summary and an empty Tickets page).
+    const driverIds = [...new Set(tickets.map(t => t.driver?.toString()).filter(id => isValidObjectId(id)))];
+    const drivers = driverIds.length
+      ? await User.find({ _id: { $in: driverIds } }).select('name email').lean()
+      : [];
+    const driverById = new Map(drivers.map(d => [d._id.toString(), d]));
+    for (const ticket of tickets) {
+      if (ticket.driver) ticket.driver = driverById.get(ticket.driver.toString()) || null;
+    }
+
     // Manually populate vehicle field - use FleetUnit only
     for (let ticket of tickets) {
       if (ticket.vehicle) {
-        ticket.vehicle = await populateVehicleInfo(ticket.vehicle);
+        try {
+          ticket.vehicle = await populateVehicleInfo(ticket.vehicle);
+        } catch (err) {
+          console.error(`Ticket ${ticket._id}: could not load vehicle`, err.message);
+          ticket.vehicle = null;
+        }
       }
     }
 
