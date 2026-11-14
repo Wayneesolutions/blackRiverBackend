@@ -240,7 +240,8 @@ export const getHOSEldData = async (req, res) => {
       // Determine violation type
       let violationType = 'None';
       if (log.eldMalfunction && !log.violations) {
-        violationType = 'ELD Malfunction';
+        // Client (14 Nov): a malfunction must show as the malfunction picked, never as a violation
+        violationType = log.eldMalfunctionType ? `ELD Malfunction: ${log.eldMalfunctionType}` : 'ELD Malfunction';
       } else if (log.violations) {
         if (driveUsed > 11) {
           violationType = '11-Hour Limit';
@@ -268,6 +269,7 @@ export const getHOSEldData = async (req, res) => {
         totalOffDutyHours: log.totalOffDutyHours || 0,
         violations: log.violations || false,
         eldMalfunction: log.eldMalfunction || false,
+        eldMalfunctionType: log.eldMalfunctionType || '',
         auditViolations: log.auditViolations || [],
         logs: log.logs || []
       };
@@ -1176,6 +1178,7 @@ export const createHosAuditForm = async (req, res) => {
       correctiveActionType,
       correctiveActionComments,
       eldMalfunction,
+      eldMalfunctionType,
       notes,
       auditorName,
       documents
@@ -1237,7 +1240,9 @@ export const createHosAuditForm = async (req, res) => {
     // action comments / type as a malfunction, since that's how the paper form records it.
     const mentionsMalfunction = (v) => typeof v === 'string' && /\beld\b[\s-]*mal/i.test(v);
     const isEldMalfunction = eldMalfunction === true || eldMalfunction === 'true' ||
-      mentionsMalfunction(correctiveActionComments) || mentionsMalfunction(correctiveActionType);
+      mentionsMalfunction(correctiveActionComments) || mentionsMalfunction(correctiveActionType) ||
+      (typeof eldMalfunctionType === 'string' && eldMalfunctionType.trim() !== '');
+    const malfunctionType = isEldMalfunction && typeof eldMalfunctionType === 'string' ? eldMalfunctionType.trim() : '';
     const payload = {
       driverId,
       driverIdDisplay: driverIdDisplay || '',
@@ -1249,12 +1254,14 @@ export const createHosAuditForm = async (req, res) => {
       drivingHours: typeof drivingHours === 'number' ? drivingHours : parseFloat(drivingHours) || 0,
       onDutyHours: typeof onDutyHours === 'number' ? onDutyHours : parseFloat(onDutyHours) || 0,
       offDutyHours: typeof offDutyHours === 'number' ? offDutyHours : parseFloat(offDutyHours) || 0,
-      violations: Array.isArray(violations) ? violations : [],
+      violations: !isEldMalfunction && Array.isArray(violations) ? violations : [],
       incidentTypes: Array.isArray(incidentTypes) ? incidentTypes : [],
       priorCounseling: priorCounseling || '',
       correctiveActionType: correctiveActionType || '',
       correctiveActionComments: correctiveActionComments || '',
       eldMalfunction: isEldMalfunction,
+      eldMalfunctionType: malfunctionType,
+      // A malfunction is not a driver violation, so no violation boxes are kept with it
       notes: notes || '',
       auditorName: auditorName || '',
       documents: uploadedDocuments.length > 0 ? uploadedDocuments : [],
@@ -1288,8 +1295,9 @@ export const createHosAuditForm = async (req, res) => {
         auditNotes: notes || '',
         auditorName: auditorName || req.user?.name || 'Unknown',
         auditedAt: new Date(),
-        auditViolations: Array.isArray(violations) ? violations : [],
+        auditViolations: !isEldMalfunction && Array.isArray(violations) ? violations : [],
         eldMalfunction: isEldMalfunction,
+        eldMalfunctionType: malfunctionType,
         company: companyId
       },
       { upsert: true, new: true }
