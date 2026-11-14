@@ -49,6 +49,14 @@ export const loginAdmin = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid email or password" });
     }
 
+    // 3b. Super Admin has its own login page; it must not get into a customer panel
+    if (admin.role === 'superadmin') {
+      return res.status(403).json({
+        success: false,
+        message: "Super Admin accounts sign in at the Super Admin login page."
+      });
+    }
+
     // 4. Check admin subscription/trial access (block login if expired)
     if (admin.role === 'admin') {
       const { checkUserAccess } = await import("../utils/adminAccessUtils.js");

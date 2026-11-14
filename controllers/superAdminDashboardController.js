@@ -2,6 +2,10 @@ import { User } from "../models/driver/userModel.js";
 import { Subscription } from "../models/subscriptionModel.js";
 import { Plan } from "../models/planModel.js";
 import moment from "moment";
+import {
+  loadRevenueContext, adminExists, statusOf, cycleOf, CYCLE_SUFFIX, paymentsOf, sumPayments,
+  monthlyEquivalent, percentChange, round2,
+} from "../utils/revenueLedger.js";
 
 /**
  * Get Super Admin Dashboard Statistics
@@ -83,163 +87,27 @@ export const getSuperAdminDashboard = async (req, res) => {
       }
     });
 
-    // 2. Get Subscription Statistics - current state, regardless of when each one was created
-    const totalSubscriptions = await Subscription.countDocuments({});
-    const activeSubscriptions = await Subscription.countDocuments({ status: 'active' });
-    const pendingSubscriptions = await Subscription.countDocuments({ status: 'pending' });
-    const cancelledSubscriptions = await Subscription.countDocuments({ status: 'cancelled' });
+    // 2. Subscription statistics + revenue, using the shared rules in utils/revenueLedger.js
+    //    (cancelled invoices and deleted customers no longer count).
+    const ctx = await loadRevenueContext();
+    const liveSubs = ctx.subscriptions.filter((sub) => adminExists(ctx, sub.admin));
+    const statusById = new Map(ctx.subscriptions.map((sub) => [sub._id.toString(), statusOf(sub, ctx, now).status]));
 
-    // 3. Calculate Revenue Metrics - filtered by time range
-    // Total lifetime revenue (one-time payments) in range
-    const lifetimeRevenue = await Subscription.aggregate([
-      {
-        $match: {
-          planType: 'lifetime',
-          paymentStatus: 'paid',
-          $or: [
-            { lastPaymentDate: { $gte: startDate } },
-            { lastPaymentDate: null, createdAt: { $gte: startDate } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          paymentDate: {
-            $ifNull: ['$lastPaymentDate', '$createdAt']
-          }
-        }
-      },
-      {
-        $match: {
-          paymentDate: { $gte: startDate }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$amount' }
-        }
-      }
-    ]);
+    const totalSubscriptions = liveSubs.length;
+    const activeSubscriptions = liveSubs.filter((sub) => sub.status === 'active' && statusById.get(sub._id.toString()) !== 'Cancelled').length;
+    const pendingSubscriptions = liveSubs.filter((sub) => sub.status === 'pending' && statusById.get(sub._id.toString()) !== 'Cancelled').length;
+    const cancelledSubscriptions = ctx.subscriptions.filter((sub) => statusById.get(sub._id.toString()) === 'Cancelled').length;
+    const overdueSubscriptions = ctx.subscriptions.filter((sub) => statusById.get(sub._id.toString()) === 'Overdue').length;
 
-    // Monthly recurring revenue (active monthly subscriptions) in range
-    const monthlyRevenueData = await Subscription.aggregate([
-      {
-        $match: {
-          planType: 'monthly',
-          status: 'active',
-          paymentStatus: 'paid',
-          $or: [
-            { lastPaymentDate: { $gte: startDate } },
-            { lastPaymentDate: null, createdAt: { $gte: startDate } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          paymentDate: {
-            $ifNull: ['$lastPaymentDate', '$createdAt']
-          }
-        }
-      },
-      {
-        $match: {
-          paymentDate: { $gte: startDate }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$amount' }
-        }
-      }
-    ]);
-
-    // Revenue for selected time range (use lastPaymentDate or createdAt)
-    const currentRangeRevenue = await Subscription.aggregate([
-      {
-        $match: {
-          paymentStatus: 'paid',
-          $or: [
-            { lastPaymentDate: { $gte: startDate } },
-            { lastPaymentDate: null, createdAt: { $gte: startDate } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          paymentDate: {
-            $ifNull: ['$lastPaymentDate', '$createdAt']
-          }
-        }
-      },
-      {
-        $match: {
-          paymentDate: { $gte: startDate }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$amount' }
-        }
-      }
-    ]);
-
-    // Revenue for comparison period (for percentage change)
-    const comparisonRangeRevenue = await Subscription.aggregate([
-      {
-        $match: {
-          paymentStatus: 'paid',
-          $or: [
-            {
-              lastPaymentDate: {
-                $gte: comparisonStartDate,
-                $lt: startDate
-              }
-            },
-            {
-              lastPaymentDate: null,
-              createdAt: {
-                $gte: comparisonStartDate,
-                $lt: startDate
-              }
-            }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          paymentDate: {
-            $ifNull: ['$lastPaymentDate', '$createdAt']
-          }
-        }
-      },
-      {
-        $match: {
-          paymentDate: {
-            $gte: comparisonStartDate,
-            $lt: startDate
-          }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$amount' }
-        }
-      }
-    ]);
-
-    const monthlyRevenue = monthlyRevenueData[0]?.total || 0;
-    const totalLifetimeRevenue = lifetimeRevenue[0]?.total || 0;
-    const currentRangeTotal = currentRangeRevenue[0]?.total || 0;
-    const comparisonRangeTotal = comparisonRangeRevenue[0]?.total || 0;
-
-    // Calculate revenue change percentage
-    const revenueChange = comparisonRangeTotal > 0
-      ? (((currentRangeTotal - comparisonRangeTotal) / comparisonRangeTotal) * 100).toFixed(1)
-      : currentRangeTotal > 0 ? 100 : 0;
+    // 3. Revenue
+    const payments = paymentsOf(ctx);
+    const currentRangeTotal = sumPayments(payments, startDate);
+    const comparisonRangeTotal = sumPayments(payments, comparisonStartDate, startDate);
+    const revenueChange = percentChange(currentRangeTotal, comparisonRangeTotal);
+    const totalLifetimeRevenue = sumPayments(payments); // all money received, all time
+    const monthlyRevenue = ctx.subscriptions
+      .filter((sub) => statusById.get(sub._id.toString()) === 'Paid')
+      .reduce((sum, sub) => sum + monthlyEquivalent(sub), 0); // monthly recurring (MRR)
 
     // 4. Get Recent Customers (last 5 admins) - filtered by time range
     const recentCustomers = await User.find({ 
@@ -265,11 +133,11 @@ export const getSuperAdminDashboard = async (req, res) => {
           adminName: customer.name || 'N/A',
           companyName: customer.company?.companyName || null,
           plan: subscription?.plan?.planName || 'No Plan',
-          status: subscription?.status || 'No Subscription',
+          status: subscription ? statusOf(subscription, ctx, now).status.toLowerCase() : 'No Subscription',
           joined: moment(customer.joinDate).format('YYYY-MM-DD'),
           revenue: subscription
-            ? `$${subscription.amount.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/${subscription.planType === 'monthly' ? 'mo' : 'one-time'}`
-            : '$0/mo',
+            ? `$${(subscription.amount || 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${CYCLE_SUFFIX[cycleOf(subscription)]}`
+            : '$0',
           instances: 1 // Default, can be enhanced later
         };
       })
@@ -315,109 +183,26 @@ export const getSuperAdminDashboard = async (req, res) => {
     let formattedRevenueTrend = [];
     
     if (timeRange === '1y') {
-      // Monthly revenue for the year
-      const monthlyRevenueTrend = await Subscription.aggregate([
-        {
-          $match: {
-            paymentStatus: 'paid',
-            $or: [
-              { lastPaymentDate: { $gte: startDate } },
-              { lastPaymentDate: null, createdAt: { $gte: startDate } }
-            ]
-          }
-        },
-        {
-          $addFields: {
-            paymentDate: {
-              $ifNull: ['$lastPaymentDate', '$createdAt']
-            }
-          }
-        },
-        {
-          $match: {
-            paymentDate: { $gte: startDate }
-          }
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: '$paymentDate' },
-              month: { $month: '$paymentDate' }
-            },
-            revenue: { $sum: '$amount' }
-          }
-        },
-        {
-          $sort: { '_id.year': 1, '_id.month': 1 }
-        }
-      ]);
-
       const monthNames = [
         'January', 'February', 'March', 'April', 'May', 'June',
         'July', 'August', 'September', 'October', 'November', 'December'
       ];
-
       for (let i = 11; i >= 0; i--) {
-        const date = moment(now).subtract(i, 'months');
-        const monthData = monthlyRevenueTrend.find(
-          r => r._id.year === date.year() && r._id.month === date.month() + 1
-        );
+        const from = moment(now).subtract(i, 'months').startOf('month');
+        const to = from.clone().add(1, 'month');
         formattedRevenueTrend.push({
-          month: monthNames[date.month()],
-          revenue: monthData?.revenue || 0
+          month: monthNames[from.month()],
+          revenue: round2(sumPayments(payments, from.toDate(), to.toDate()))
         });
       }
     } else {
-      // For shorter ranges, show daily data grouped by week
       const daysInRange = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
-      const dailyRevenueTrend = await Subscription.aggregate([
-        {
-          $match: {
-            paymentStatus: 'paid',
-            $or: [
-              { lastPaymentDate: { $gte: startDate } },
-              { lastPaymentDate: null, createdAt: { $gte: startDate } }
-            ]
-          }
-        },
-        {
-          $addFields: {
-            paymentDate: {
-              $ifNull: ['$lastPaymentDate', '$createdAt']
-            }
-          }
-        },
-        {
-          $match: {
-            paymentDate: { $gte: startDate }
-          }
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: '$paymentDate' },
-              month: { $month: '$paymentDate' },
-              day: { $dayOfMonth: '$paymentDate' }
-            },
-            revenue: { $sum: '$amount' }
-          }
-        },
-        {
-          $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
-        }
-      ]);
-
-      // Group by week for display
       for (let i = daysInRange - 1; i >= 0; i--) {
-        const date = moment(now).subtract(i, 'days');
-        const dayData = dailyRevenueTrend.find(
-          r => r._id.year === date.year() && 
-               r._id.month === date.month() + 1 && 
-               r._id.day === date.date()
-        );
+        const from = moment(now).subtract(i, 'days').startOf('day');
+        const to = from.clone().add(1, 'day');
         formattedRevenueTrend.push({
-          month: date.format('MMM DD'),
-          revenue: dayData?.revenue || 0
+          month: from.format('MMM DD'),
+          revenue: round2(sumPayments(payments, from.toDate(), to.toDate()))
         });
       }
     }
@@ -441,9 +226,7 @@ export const getSuperAdminDashboard = async (req, res) => {
     }));
 
     // Calculate customer growth based on comparison period
-    const customerGrowth = newCustomersInComparisonRange > 0
-      ? (((newCustomersInRange - newCustomersInComparisonRange) / newCustomersInComparisonRange) * 100).toFixed(1)
-      : newCustomersInRange > 0 ? 100 : 0;
+    const customerGrowth = percentChange(newCustomersInRange, newCustomersInComparisonRange);
 
     // Calculate subscription growth based on comparison period
     const subscriptionsInRange = await Subscription.countDocuments({
@@ -456,9 +239,7 @@ export const getSuperAdminDashboard = async (req, res) => {
       }
     });
 
-    const subscriptionGrowth = subscriptionsInComparisonRange > 0
-      ? (((subscriptionsInRange - subscriptionsInComparisonRange) / subscriptionsInComparisonRange) * 100).toFixed(1)
-      : subscriptionsInRange > 0 ? 100 : 0;
+    const subscriptionGrowth = percentChange(subscriptionsInRange, subscriptionsInComparisonRange);
 
     // Response data
     const response = {
@@ -470,12 +251,12 @@ export const getSuperAdminDashboard = async (req, res) => {
           activeCustomers: activeCustomersInRange, // Active customers who joined in selected time range
           totalActiveCustomers, // Total active customers (all-time, for Active Customers card)
           activeSubscriptions,
-          monthlyRevenue: parseFloat(monthlyRevenue.toFixed(2)),
-          currentMonthRevenue: parseFloat(currentRangeTotal.toFixed(2)),
-          totalLifetimeRevenue: parseFloat(totalLifetimeRevenue.toFixed(2)),
-          revenueChange: parseFloat(revenueChange),
-          customerGrowth: parseFloat(customerGrowth),
-          subscriptionGrowth: parseFloat(subscriptionGrowth),
+          monthlyRevenue: round2(monthlyRevenue),
+          currentMonthRevenue: round2(currentRangeTotal), // revenue received in the selected range
+          totalLifetimeRevenue: round2(totalLifetimeRevenue),
+          revenueChange, // null = nothing in the previous period to compare against
+          customerGrowth,
+          subscriptionGrowth,
           timeRange: timeRange
         },
         recentCustomers: recentCustomersWithSubs,
@@ -489,7 +270,8 @@ export const getSuperAdminDashboard = async (req, res) => {
           total: totalSubscriptions,
           active: activeSubscriptions,
           pending: pendingSubscriptions,
-          cancelled: cancelledSubscriptions
+          cancelled: cancelledSubscriptions,
+          overdue: overdueSubscriptions
         }
       }
     };
