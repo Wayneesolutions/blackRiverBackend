@@ -17,7 +17,7 @@ for (const row of rows) {
   const placeCountry = countryFromInspectionPlace(row);
   if (placeCountry && placeCountry !== row.country) {
     changed++;
-    console.log(`${row.inspectionId}: "${row.location}" ${row.country} → ${placeCountry}`);
+    console.log(`${row.inspectionId}: location "${row.location}", jurisdiction "${row.jurisdiction || ""}": ${row.country} → ${placeCountry}`);
     if (apply) await CvsaInspection.updateOne({ _id: row._id }, { $set: { country: placeCountry } });
   }
 }
