@@ -13,6 +13,7 @@ import { extractFuelReceiptData } from "../services/openaiService.js";
 import fs from "fs";
 import { Trailer } from "../models/driver/trailerModel.js";
 import { parseCsv, parseNumber, parseFuelDate, detectDateOrder } from "../utils/fuelCsv.js";
+import { parsePfjXlsx, parsePfjPdf, summarize } from '../utils/pilotFlyingJParser.js';
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -1884,15 +1885,36 @@ export const parseFuelCardPdf = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Unable to read uploaded file.' });
     }
 
-    const pdfRows = await extractPdfRows(fileBuffer);
-    const rawTransactions = parseEfsRows(pdfRows);
+    // Pilot Flying J reports come as Excel or PDF; EFS/Comdata as PDF. A PDF is read by both
+    // parsers and the one that finds more transactions wins (PFJ cells wrap over several lines,
+    // which the EFS parser can't follow).
+    const name = (req.file.originalname || '').toLowerCase();
+    const isExcel = name.endsWith('.xlsx') || /spreadsheetml/.test(req.file.mimetype || '');
+    let rawTransactions;
+    if (isExcel) {
+      rawTransactions = parsePfjXlsx(fileBuffer);
+    } else {
+      const [efs, pfj] = await Promise.all([
+        extractPdfRows(fileBuffer).then(parseEfsRows).catch(() => []),
+        parsePfjPdf(fileBuffer).catch(() => []),
+      ]);
+      rawTransactions = pfj.length > efs.length ? pfj : efs;
+    }
 
     if (rawTransactions.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'No transactions found. Make sure this is an EFS/Comdata fuel card report.',
+        message: 'No transactions found. Upload a Pilot Flying J transaction report (Excel or PDF) or an EFS/Comdata fuel card report (PDF).',
       });
     }
+
+    // Already imported (same purchase from an earlier upload, PDF or Excel): shown, skipped by default
+    const importKeys = rawTransactions.map(t => t.importKey).filter(Boolean);
+    const alreadyImported = new Set(
+      importKeys.length
+        ? (await FuelReport.find({ transactionNumber: { $in: importKeys } }).select('transactionNumber').lean()).map(r => r.transactionNumber)
+        : []
+    );
 
     // Load drivers and vehicles for auto-matching
     const matchFilter = companyId ? { company: companyId } : {};
@@ -1930,7 +1952,9 @@ export const parseFuelCardPdf = async (req, res) => {
 
     const draftRows = rawTransactions.map((trx, idx) => {
       const driver = matchDriver(trx.driverIdRaw);
-      const vehicle = matchVehicle(trx.vehicleRaw);
+      // PFJ: "Card Description" is the unit number and is filled when the Vehicle column is blank
+      const vehicle = matchVehicle(trx.vehicleRaw) || matchVehicle(trx.cardDescription);
+      const duplicate = !!(trx.importKey && alreadyImported.has(trx.importKey));
       const matchStatus =
         driver && vehicle ? 'matched' :
         (driver || vehicle) ? 'review' : 'unmatched';
@@ -1944,18 +1968,22 @@ export const parseFuelCardPdf = async (req, res) => {
         driverId_db: driver?._id?.toString() || null,
         vehicleId_db: vehicle?._id?.toString() || null,
         vehicleUnitNo: vehicle?.unitNo || null,
-        skip: false,
+        alreadyImported: duplicate,
+        skip: duplicate,
       };
     });
 
     const matched = draftRows.filter(r => r.matchStatus === 'matched').length;
     const review = draftRows.filter(r => r.matchStatus === 'review').length;
     const unmatched = draftRows.filter(r => r.matchStatus === 'unmatched').length;
+    const duplicates = draftRows.filter(r => r.alreadyImported).length;
+    const totals = summarize(rawTransactions);
 
     res.json({
       success: true,
-      message: `Parsed ${draftRows.length} transactions — ${matched} matched, ${review} need review, ${unmatched} unmatched`,
-      data: { rows: draftRows, totalRows: draftRows.length, matched, review, unmatched },
+      message: `Parsed ${draftRows.length} transactions (${totals.invoiceAmount.toFixed(2)} invoice total) — ${matched} matched, ${review} need review, ${unmatched} unmatched` +
+        (duplicates ? `, ${duplicates} already imported (skipped)` : ''),
+      data: { rows: draftRows, totalRows: draftRows.length, matched, review, unmatched, alreadyImported: duplicates, totals },
     });
   } catch (error) {
     console.error('Error parsing fuel card PDF:', error);
@@ -1990,21 +2018,35 @@ export const confirmFuelCardImport = async (req, res) => {
           continue;
         }
 
-        // Ensure a unique transaction number exists
-        let transactionNumber = row.transactionNumber || `FC-${Date.now()}-${row._rowIndex}`;
+        let transactionNumber;
+        if (row.importKey) {
+          // One purchase line = one key (same in the PFJ PDF and Excel): never saved twice
+          transactionNumber = row.importKey;
+          if (await FuelReport.exists({ transactionNumber })) {
+            results.skipped = (results.skipped || 0) + 1;
+            continue;
+          }
+        } else {
+          // Ensure a unique transaction number exists
+          transactionNumber = row.transactionNumber || `FC-${Date.now()}-${row._rowIndex}`;
 
-        // Check for duplicates
-        const existing = await FuelReport.findOne({ transactionNumber });
-        if (existing) {
-          // Append suffix to make unique
-          transactionNumber = `${transactionNumber}-${row._rowIndex}-${Date.now()}`;
+          // Check for duplicates
+          const existing = await FuelReport.findOne({ transactionNumber });
+          if (existing) {
+            // Append suffix to make unique
+            transactionNumber = `${transactionNumber}-${row._rowIndex}-${Date.now()}`;
+          }
         }
 
         const notes = [
+          row.source === 'pilot-flying-j' ? 'Pilot Flying J' : null,
           row.cardNumber ? `Card: ${row.cardNumber}` : null,
-          row.quantity ? `Qty: ${row.quantity}` : null,
-          row.taxHst ? `HST: ${row.taxHst}` : null,
-          row.taxQst ? `QST: ${row.taxQst}` : null,
+          row.importKey && row.transactionNumber ? `Trx #: ${row.transactionNumber}` : null,
+          row.time ? `Time: ${row.time}` : null,
+          row.quantity ? `Qty: ${row.quantity}${row.measurementUnit ? ` ${row.measurementUnit}` : ''}` : null,
+          row.taxHst ? `GST/HST: ${row.taxHst}` : null,
+          row.taxQst ? `PST/QST: ${row.taxQst}` : null,
+          row.merchandiseAmount ? `Merchandise: ${row.merchandiseAmount}` : null,
         ].filter(Boolean).join(' | ');
 
         const report = new FuelReport({
@@ -2024,6 +2066,9 @@ export const confirmFuelCardImport = async (req, res) => {
           city: row.storeCity || null,
           cityLocation: row.storeCity || null,
           currentOdometer: row.odometer || null,
+          volume: row.quantity ? String(row.quantity) : undefined,
+          measurementUnit: row.measurementUnit || undefined,
+          fuelVendor: row.source === 'pilot-flying-j' ? 'Pilot Flying J' : undefined,
           paymentNotes: notes || null,
           location: row.storeCity ? { address: `${row.storeCity}, ${row.state || ''}`.trim() } : null,
           company: companyId || null,
@@ -2039,8 +2084,8 @@ export const confirmFuelCardImport = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Import complete: ${results.success} saved, ${results.failed} failed`,
-      data: { success: results.success, failed: results.failed, errors: results.errors.slice(0, 20) },
+      message: `Import complete: ${results.success} saved, ${results.failed} failed` + (results.skipped ? `, ${results.skipped} already imported` : ''),
+      data: { success: results.success, failed: results.failed, skipped: results.skipped || 0, errors: results.errors.slice(0, 20) },
     });
   } catch (error) {
     console.error('Error confirming fuel card import:', error);
