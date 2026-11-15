@@ -2,6 +2,7 @@ import { Payroll } from "../../models/hr/payrollSchemaModel.js";
 import { Attendance } from "../../models/hr/attendanceModel.js";
 import { User } from "../../models/driver/userModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { resolveEmployeeHourlyRate, payableHoursFromAttendance } from "../../utils/payrollRates.js";
 import { analyzePayrollWithAttendance, generateMonthlySalaryReport as generateAIReport, analyzeBulkPayrollWithAI } from "../../services/openaiService.js";
 
 /**
@@ -69,12 +70,25 @@ export const generateAutomatedPayroll = async (req, res) => {
       .limit(3)
       .lean();
 
-    // Use provided baseSalary or get from user details
-    const employeeBaseSalary = baseSalary || user.details?.baseSalary || 0;
+    // Use provided baseSalary, else details.baseSalary, else hourly pay from attendance.
+    // The Employee form stores "Pay Rate (per hour)" in details.payRate for every pay
+    // frequency, so salaried (Biweekly/SemiMonthly/Monthly) staff are paid hourly here.
+    const empHourlyRate = resolveEmployeeHourlyRate(user);
+    const isHourlyPay = !(Number(baseSalary) > 0) && !(Number(user.details?.baseSalary) > 0) && empHourlyRate > 0;
+    let employeeBaseSalary = Number(baseSalary) || Number(user.details?.baseSalary) || 0;
+    if (isHourlyPay) {
+      const presentRecords = attendanceRecords.filter(r => r.status === 'present' || r.status === 'late');
+      const payableHours = payableHoursFromAttendance(attendanceRecords);
+      const regular = Math.min(payableHours, presentRecords.length * 8);
+      const overtime = Math.max(0, payableHours - regular);
+      employeeBaseSalary = Math.round(((regular * empHourlyRate) + (overtime * empHourlyRate * 1.5)) * 100) / 100;
+    }
     if (!employeeBaseSalary || employeeBaseSalary === 0) {
       return res.status(400).json({
         success: false,
-        message: "Base salary is required. Please provide baseSalary or set it in employee details."
+        message: empHourlyRate > 0
+          ? "No present days found in attendance for this period, so pay is $0."
+          : "Pay Rate is not set for this employee. Set Pay Rate (per hour) on the employee profile, or provide baseSalary."
       });
     }
 
@@ -113,8 +127,9 @@ export const generateAutomatedPayroll = async (req, res) => {
     const totalHours = attendanceRecords.reduce((sum, r) => sum + (r.totalHours || 0), 0);
 
     // Calculate deductions (fallback if AI didn't provide)
-    let calculatedDeductions = recommendations.recommendedDeductions || 0;
-    if (calculatedDeductions === 0) {
+    // Hourly pay already excludes absent days, so no absence deduction on top.
+    let calculatedDeductions = isHourlyPay ? 0 : (recommendations.recommendedDeductions || 0);
+    if (calculatedDeductions === 0 && !isHourlyPay) {
       const absentDeduction = absentDays * dailyRate;
       calculatedDeductions = absentDeduction; // No late deduction - late is treated as present
     }
@@ -168,7 +183,7 @@ export const generateAutomatedPayroll = async (req, res) => {
     }
 
     // Calculate hours properly
-    const hourlyRate = user.details?.hourlyRate || 0;
+    const hourlyRate = empHourlyRate;
     let regularHoursCalc = 0;
     let overtimeHoursCalc = 0;
     
@@ -310,11 +325,21 @@ export const generateMonthlySalaryReport = async (req, res) => {
         const existingPayroll = payrolls.find(
           p => p.userId?._id?.toString() === employee._id.toString()
         );
-        const baseSalary = existingPayroll?.baseSalary || employee.details?.baseSalary || 0;
+        let baseSalary = existingPayroll?.baseSalary || employee.details?.baseSalary || 0;
+        // Fall back to Pay Rate (per hour) x payable attendance hours
+        const reportHourlyRate = resolveEmployeeHourlyRate(employee);
+        const reportIsHourly = !(baseSalary > 0) && reportHourlyRate > 0;
+        if (reportIsHourly) {
+          const payableHours = payableHoursFromAttendance(empAttendance);
+          const regular = Math.min(payableHours, workedDays * 8);
+          const overtime = Math.max(0, payableHours - regular);
+          baseSalary = Math.round(((regular * reportHourlyRate) + (overtime * reportHourlyRate * 1.5)) * 100) / 100;
+        }
 
         // Calculate salary adjustments based on attendance
         const dailyRate = baseSalary / 30;
-        const absentDeduction = absentDays * dailyRate;
+        // Hourly pay already excludes absent days
+        const absentDeduction = reportIsHourly ? 0 : absentDays * dailyRate;
         const deductions = absentDeduction; // No late deduction - late is treated as present
 
         // Bonus calculation (can be enhanced with AI)
@@ -502,13 +527,16 @@ export const bulkAIGenerateAllPayrolls = async (req, res) => {
       // 2. Employee details baseSalary (if exists)
       // 3. hourlyRate * 160 (monthly hours)
       // 4. Default to 0 (user can fill in during review)
+      // Pay Rate on the Employee form is "per hour" for every pay frequency
+      // (details.payRate); details.hourlyRate is only filled when Pay Type = Hourly.
+      const empHourlyRate = resolveEmployeeHourlyRate(employee);
       let baseSalary = 0;
-      if (empPreviousPayrolls.length > 0 && empPreviousPayrolls[0].baseSalary) {
-        baseSalary = empPreviousPayrolls[0].baseSalary;
-      } else if (employee.details?.baseSalary) {
+      if (employee.details?.baseSalary) {
         baseSalary = employee.details.baseSalary;
-      } else if (employee.details?.hourlyRate && employee.details.hourlyRate > 0) {
-        baseSalary = employee.details.hourlyRate * 160; // Monthly hours
+      } else if (empHourlyRate > 0) {
+        baseSalary = empHourlyRate * 160; // Monthly hours (reference only; hourly pay is computed from attendance below)
+      } else if (empPreviousPayrolls.length > 0 && empPreviousPayrolls[0].baseSalary) {
+        baseSalary = empPreviousPayrolls[0].baseSalary;
       }
 
       employeePayrollData.push({
@@ -516,13 +544,14 @@ export const bulkAIGenerateAllPayrolls = async (req, res) => {
         employeeName: employee.name,
         role: employee.role,
         baseSalary,
-        hourlyRate: employee.details?.hourlyRate || 0,
+        hourlyRate: empHourlyRate,
         attendanceRecords,
         presentDays, // Includes late days
         workedDays, // Same as presentDays (late included)
         absentDays,
         leaveDays,
-        totalHours,
+        // Present days with no tracked hours count as 8h so present staff aren't paid $0
+        totalHours: empHourlyRate > 0 ? payableHoursFromAttendance(attendanceRecords) : totalHours,
         previousPayrolls: empPreviousPayrolls,
         hasSalaryInfo: baseSalary > 0
       });
@@ -579,9 +608,11 @@ export const bulkAIGenerateAllPayrolls = async (req, res) => {
         // Bonus if worked 95% or more of expected days
         bonus = aiRec.recommendedBonus || (empData.workedDays > 0 && totalDays > 0 && (empData.workedDays / totalDays) >= 0.95 ? calculatedBaseSalary * 0.05 : 0);
         const dailyRate = calculatedBaseSalary / 30;
-        // Deduct for absent days only (late is treated as present)
-        const absentDeduction = empData.absentDays * dailyRate;
-        deductions = aiRec.recommendedDeductions || absentDeduction;
+        // Deduct for absent days only (late is treated as present).
+        // Hourly pay is already computed from hours worked, so absences are not deducted again.
+        const isHourlyEmp = empData.hourlyRate && empData.hourlyRate > 0;
+        const absentDeduction = isHourlyEmp ? 0 : empData.absentDays * dailyRate;
+        deductions = isHourlyEmp ? 0 : (aiRec.recommendedDeductions || absentDeduction);
       } else {
         // Use AI recommendations if available, otherwise 0
         bonus = aiRec.recommendedBonus || 0;

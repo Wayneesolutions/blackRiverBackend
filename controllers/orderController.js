@@ -559,7 +559,11 @@ export const createOrder = async (req, res) => {
         height: normalizeNumber(req.body.dimensions?.height),
         unit: normalizeString(req.body.dimensions?.unit) || 'cm'
       },
-      distance: calculatedDistance > 0 ? calculatedDistance : normalizeNumber(req.body.distance),
+      // order.distance is stored in km (payroll converts km -> miles). The New Order form
+      // sends its distance in MILES, so convert it when we couldn't calculate our own.
+      distance: calculatedDistance > 0
+        ? calculatedDistance
+        : (normalizeNumber(req.body.distance) > 0 ? Math.round((normalizeNumber(req.body.distance) / 0.621371) * 100) / 100 : normalizeNumber(req.body.distance)),
       additionalInfo: {
         CSA: normalizeBoolean(req.body.additionalInfo?.CSA),
         CTPAT: normalizeBoolean(req.body.additionalInfo?.CTPAT),
@@ -4466,6 +4470,15 @@ export const approveOrderDocuments = async (req, res) => {
     order.documentsApprovedAt = new Date();
     order.approvedWithoutDocuments = approveWithoutDocuments === true;
 
+    // If the driver has already finished the load (status pending_review /
+    // verification_pending), approving the POD is the final step: mark it completed.
+    // Previously the order stayed in pending_review after approval, so it never
+    // reached driver payroll, settlements or invoicing (all of which read 'completed').
+    const awaitingApproval = ['pending_review', 'verification_pending'].includes(String(order.status || '').toLowerCase());
+    if (awaitingApproval) {
+      order.status = 'completed';
+    }
+
     await order.save();
 
     await order.populate([
@@ -4476,9 +4489,11 @@ export const approveOrderDocuments = async (req, res) => {
 
     res.json({
       success: true,
-      message: approveWithoutDocuments 
-        ? 'Order approved without documents. Order can now be completed.'
-        : 'Order documents approved. Order can now be completed.',
+      message: awaitingApproval
+        ? 'Documents approved. Order marked as completed and is now available for driver payroll.'
+        : approveWithoutDocuments
+          ? 'Order approved without documents. Order can now be completed.'
+          : 'Order documents approved. Order can now be completed.',
       data: order
     });
   } catch (error) {

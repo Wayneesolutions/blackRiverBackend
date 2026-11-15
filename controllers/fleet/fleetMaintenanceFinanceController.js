@@ -5,9 +5,36 @@ import { PartsCostLog } from "../../models/fleet/partsCostLogModel.js";
 import { LaborRate } from "../../models/fleet/laborRateModel.js";
 import { MaintenancePlan } from "../../models/fleet/maintenancePlanModel.js";
 import { FleetUnit } from "../../models/fleet/fleetUnitModel.js";
+import { GeneralRepair } from "../../models/fleet/generalRepairModel.js";
+import { Vehicle } from "../../models/driver/vehicleModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
 import mongoose from "mongoose";
+
+// Mongoose casts string ids in find(), but NOT inside aggregate() pipelines.
+// getUserCompanyId() returns a string, so every aggregate $match on company
+// matched nothing and the stat cards always showed $0. Match both forms.
+const toAggregateMatch = (query = {}) => {
+  const match = { ...query };
+  const company = match.company;
+  if (typeof company === 'string' && mongoose.Types.ObjectId.isValid(company)) {
+    match.company = { $in: [new mongoose.Types.ObjectId(company), company] };
+  }
+  return match;
+};
+
+// Cost of a maintenance order (GeneralRepair): final invoice total if the mechanic
+// completed it, otherwise the amount entered when it was logged.
+const generalRepairCost = (gr) => Number(gr.completionTotalAmount) || Number(gr.amount) || 0;
+
+// Vehicle services that already produced a maintenance order (GeneralRepair.sourceServiceId)
+// are counted once, through the maintenance order, to avoid double counting.
+const getLinkedServiceIds = async (query) => {
+  const linked = await GeneralRepair.find({ ...query, sourceServiceId: { $ne: null } })
+    .select('sourceServiceId')
+    .lean();
+  return linked.map(gr => gr.sourceServiceId).filter(Boolean);
+};
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -77,9 +104,18 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       .populate('vehicleId', 'internalId plateNumber make model')
       .lean();
 
-    const vehicleServices = await VehicleService.find(query)
+    const linkedServiceIds = await getLinkedServiceIds(query);
+    const vehicleServices = await VehicleService.find({ ...query, _id: { $nin: linkedServiceIds } })
       .populate('vehicleId', 'internalId plateNumber make model')
       .lean();
+
+    // Maintenance orders (Fleet Maintenance > Maintenance Orders Log)
+    const generalRepairs = await GeneralRepair.find(query)
+      .select('unitNumber unitReference description amount completionTotalAmount serviceDate')
+      .lean();
+
+    // Trucks from the Fleet Maintenance module (Vehicle model) for name + odometer lookup
+    const vehicles = await Vehicle.find(query).select('_id internalId unitNumber plateNumber odometer').lean();
 
     // Aggregate expenses by vehicle
     const vehicleExpenses = {};
@@ -219,8 +255,51 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       const cost = Number(pcl.totalCost) || 0;
       vehicleExpenses[vehicleKey].totalExpense += cost;
       
-      vehicleExpenses[vehicleKey].serviceTypes['Parts'] = 
+      vehicleExpenses[vehicleKey].serviceTypes['Parts'] =
         (vehicleExpenses[vehicleKey].serviceTypes['Parts'] || 0) + cost;
+    });
+
+    // Process maintenance orders (GeneralRepair)
+    generalRepairs.forEach(gr => {
+      const cost = generalRepairCost(gr);
+      if (cost <= 0) return;
+
+      let vehicleKey = null;
+      let vehicleName = gr.unitNumber || 'Unknown';
+
+      const refId = gr.unitReference ? gr.unitReference.toString() : null;
+      const matchedUnit = fleetUnits.find(u =>
+        (refId && u._id.toString() === refId) || u.unitNo === gr.unitNumber || u.internalId === gr.unitNumber
+      );
+      const matchedVehicle = !matchedUnit && vehicles.find(v =>
+        (refId && v._id.toString() === refId) || v.internalId === gr.unitNumber || v.unitNumber === gr.unitNumber || v.plateNumber === gr.unitNumber
+      );
+
+      if (matchedUnit) {
+        vehicleKey = matchedUnit._id.toString();
+        vehicleName = matchedUnit.internalId || matchedUnit.unitNo || gr.unitNumber;
+      } else if (matchedVehicle) {
+        vehicleKey = matchedVehicle._id.toString();
+        vehicleName = matchedVehicle.internalId || matchedVehicle.unitNumber || matchedVehicle.plateNumber || gr.unitNumber;
+      } else if (gr.unitNumber) {
+        vehicleKey = gr.unitNumber;
+      }
+
+      if (!vehicleKey) return;
+
+      if (!vehicleExpenses[vehicleKey]) {
+        vehicleExpenses[vehicleKey] = {
+          vehicle: vehicleName,
+          vehicleId: vehicleKey,
+          totalExpense: 0,
+          expenses: [],
+          serviceTypes: {}
+        };
+      }
+
+      vehicleExpenses[vehicleKey].totalExpense += cost;
+      vehicleExpenses[vehicleKey].serviceTypes['Repairs'] =
+        (vehicleExpenses[vehicleKey].serviceTypes['Repairs'] || 0) + cost;
     });
 
     // Format response
@@ -236,6 +315,14 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
         odometer = matchedUnit.currentOdometer || matchedUnit.odometer || 0;
       } else if (odometerMap[exp.vehicle]) {
         odometer = odometerMap[exp.vehicle];
+      } else {
+        // Truck from the Vehicle model: odometer is stored in km -> convert to miles
+        const matchedVehicle = vehicles.find(v =>
+          v._id.toString() === exp.vehicleId || v.internalId === exp.vehicle || v.unitNumber === exp.vehicle
+        );
+        if (matchedVehicle?.odometer) {
+          odometer = matchedVehicle.odometer * 0.621371;
+        }
       }
       
       // Calculate cost per mile (convert km to miles if needed, or use miles directly)
@@ -846,12 +933,15 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const companyFilter = companyId ? { company: companyId } : null;
     const query = await getCombinedFilter(req.user, companyFilter) || {};
 
-    // Calculate total maintenance cost (from work orders and vehicle services)
-    // Include only completed work orders and services with costs
+    // Calculate total maintenance cost (work orders + vehicle services + parts log + maintenance orders)
+    // aggregate() does not cast string company ids -> use toAggregateMatch()
+    const aggQuery = toAggregateMatch(query);
+    const linkedServiceIds = await getLinkedServiceIds(query);
+
     const workOrdersCost = await WorkOrder.aggregate([
       { 
         $match: { 
-          ...query,
+          ...aggQuery,
           estimatedCost: { $exists: true, $ne: null, $gt: 0 }
         } 
       },
@@ -862,7 +952,8 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const vehicleServicesCost = await VehicleService.aggregate([
       { 
         $match: { 
-          ...query,
+          ...aggQuery,
+          _id: { $nin: linkedServiceIds },
           estimatedCost: { $exists: true, $ne: null, $gt: 0 }
         } 
       },
@@ -872,16 +963,26 @@ export const getFleetMaintenanceStats = async (req, res) => {
 
     // Also include parts cost log entries
     const partsCostLogTotal = await PartsCostLog.aggregate([
-      { $match: query },
+      { $match: aggQuery },
       { $group: { _id: null, total: { $sum: '$totalCost' } } }
     ]);
     const partsTotal = partsCostLogTotal[0]?.total || 0;
 
-    const totalMaintenanceCost = woTotal + vsTotal + partsTotal;
+    // Maintenance orders (Fleet Maintenance > Maintenance Orders Log)
+    const generalRepairDocs = await GeneralRepair.find(query)
+      .select('amount completionTotalAmount serviceDate createdAt')
+      .lean();
+    const grTotal = generalRepairDocs.reduce((sum, gr) => sum + generalRepairCost(gr), 0);
 
-    // Calculate average cost per mile
+    const totalMaintenanceCost = woTotal + vsTotal + partsTotal + grTotal;
+
+    // Calculate average cost per mile (FleetUnit odometer is miles; Vehicle odometer is km)
     const fleetUnitsData = await FleetUnit.find(query).select('odometer currentOdometer').lean();
-    const totalMiles = fleetUnitsData.reduce((sum, unit) => sum + (unit.currentOdometer || unit.odometer || 0), 0);
+    let totalMiles = fleetUnitsData.reduce((sum, unit) => sum + (unit.currentOdometer || unit.odometer || 0), 0);
+    if (totalMiles === 0) {
+      const vehiclesData = await Vehicle.find(query).select('odometer').lean();
+      totalMiles = vehiclesData.reduce((sum, v) => sum + ((v.odometer || 0) * 0.621371), 0);
+    }
     const avgCostPerMile = totalMiles > 0 ? (totalMaintenanceCost / totalMiles) : 0;
 
     // Calculate parts inventory value (from SparePart model)
@@ -897,7 +998,7 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const partsValue = await SparePart.aggregate([
       { 
         $match: {
-          ...partsQuery,
+          ...toAggregateMatch(partsQuery),
           stockQty: { $exists: true, $gte: 0 },
           buyingPrice: { $exists: true, $gte: 0 }
         }
@@ -930,7 +1031,7 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const lastMonthWorkOrders = await WorkOrder.aggregate([
       { 
         $match: { 
-          ...query,
+          ...aggQuery,
           createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd },
           estimatedCost: { $exists: true, $ne: null, $gt: 0 }
         } 
@@ -940,7 +1041,8 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const lastMonthServices = await VehicleService.aggregate([
       { 
         $match: { 
-          ...query,
+          ...aggQuery,
+          _id: { $nin: linkedServiceIds },
           createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd },
           estimatedCost: { $exists: true, $ne: null, $gt: 0 }
         } 
@@ -950,16 +1052,24 @@ export const getFleetMaintenanceStats = async (req, res) => {
     const lastMonthParts = await PartsCostLog.aggregate([
       { 
         $match: { 
-          ...query,
+          ...aggQuery,
           dateOfUse: { $gte: lastMonthStart, $lte: lastMonthEnd }
         } 
       },
       { $group: { _id: null, total: { $sum: '$totalCost' } } }
     ]);
     
+    const lastMonthRepairs = generalRepairDocs
+      .filter(gr => {
+        const d = new Date(gr.serviceDate || gr.createdAt);
+        return d >= lastMonthStart && d <= lastMonthEnd;
+      })
+      .reduce((sum, gr) => sum + generalRepairCost(gr), 0);
+
     const lastMonthTotal = (lastMonthWorkOrders[0]?.total || 0) + 
                           (lastMonthServices[0]?.total || 0) + 
-                          (lastMonthParts[0]?.total || 0);
+                          (lastMonthParts[0]?.total || 0) +
+                          lastMonthRepairs;
     
     const percentChange = lastMonthTotal > 0 
       ? (((totalMaintenanceCost - lastMonthTotal) / lastMonthTotal) * 100).toFixed(1)
