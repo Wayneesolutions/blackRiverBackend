@@ -133,6 +133,7 @@ import {
   createBulkOrders,
   getOrderSuggestions,
   getOrderAttachmentSignedUrl,
+  uploadOrderDocumentByDispatch,
   approveOrderDocuments
 } from '../controllers/orderController.js'
 import {
@@ -857,6 +858,15 @@ dispatcherRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher'),
   deleteOrder
+)
+
+// Dispatch uploads a document (BOL, POD, rate confirmation, manifest, other) to an order
+dispatcherRoute.post(
+  '/order/:id/documents',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher'),
+  FileUpload.single('document'),
+  uploadOrderDocumentByDispatch
 )
 
 // Get signed URL for order attachment

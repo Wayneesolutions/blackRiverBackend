@@ -16,6 +16,21 @@ import { sendPushToDriver } from "../services/pushNotificationService.js";
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
 
+// Content type for opening an S3 attachment in the browser, from the key or the file name
+const ATTACHMENT_TYPES = {
+  pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', txt: 'text/plain', csv: 'text/csv',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+const attachmentContentType = (...names) => {
+  for (const n of names) {
+    const ext = String(n || '').split('?')[0].split('.').pop()?.toLowerCase();
+    if (ext && ATTACHMENT_TYPES[ext]) return ATTACHMENT_TYPES[ext];
+  }
+  return undefined; // let S3 send the type stored with the object
+};
+
 const normalizeString = (value) => {
   if (value === undefined || value === null) return '';
   const str = String(value).trim();
@@ -699,6 +714,7 @@ export const createOrder = async (req, res) => {
         const attachmentName = req.body[`attachmentName_${index}`] || file.originalname;
         const payable = req.body[`attachmentPayable_${index}`] === 'true';
         const shareWithDriver = req.body[`attachmentShareWithDriver_${index}`] === 'true';
+        const attachmentType = req.body[`attachmentType_${index}`] || undefined;
         const fileUrl = getFileUrl(file);
 
         // Find existing attachment or create new one
@@ -706,11 +722,15 @@ export const createOrder = async (req, res) => {
         if (existingAttachment) {
           existingAttachment.url = fileUrl;
           existingAttachment.fileSize = file.size || existingAttachment.fileSize || 0;
+          if (attachmentType) existingAttachment.type = attachmentType;
         } else {
           processedAttachments.push({
             id: Date.now() + index,
             name: attachmentName,
             url: fileUrl,
+            type: attachmentType,
+            uploadedAt: new Date(),
+            uploadedBy: req.user?._id,
             fileSize: file.size || 0,
             payable: payable,
             shareWithDriver: shareWithDriver
@@ -1455,7 +1475,9 @@ export const getOrderById = async (req, res) => {
                 Bucket: bucketName,
                 Key: key,
                 ResponseContentDisposition: 'inline',
-                ResponseContentType: 'application/pdf',
+                // Was always application/pdf: the driver's POD / manifest photos (JPEG) then
+                // would not open ("failed to load PDF"). Use the file's own type.
+                ResponseContentType: attachmentContentType(key, attachment.name),
               });
 
               const signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
@@ -2334,12 +2356,34 @@ export const updateOrder = async (req, res) => {
     if (req.body.attachments !== undefined || (files.attachment && files.attachment.length > 0)) {
       let processedAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : (order.attachments || []);
 
+      // The form sends back the attachments it loaded, and those carry 1-hour signed S3 links and no
+      // type / upload details. Saving them as-is broke the driver's POD and manifest an hour later
+      // and turned them into "OTHER". Keep what is stored and take only the editable fields.
+      const isSignedUrl = (u) => typeof u === 'string' && /[?&]X-Amz-(Signature|Credential)=/.test(u);
+      const stored = (order.attachments || []).map((a) => (a && typeof a.toObject === 'function' ? a.toObject() : a));
+      const storedById = new Map(stored.map((a) => [String(a.id ?? a._id), a]));
+      processedAttachments = processedAttachments.map((att) => {
+        if (!att || typeof att !== 'object') return att;
+        const prev = storedById.get(String(att.id ?? att._id));
+        const incomingUrl = isSignedUrl(att.url) ? String(att.url).split('?')[0] : att.url;
+        if (!prev) return { ...att, url: incomingUrl };
+        return {
+          ...prev,
+          name: att.name || prev.name,
+          payable: att.payable ?? prev.payable,
+          shareWithDriver: att.shareWithDriver ?? prev.shareWithDriver,
+          type: att.type || prev.type,
+          url: !incomingUrl || isSignedUrl(att.url) ? prev.url : incomingUrl,
+        };
+      });
+
       // Process uploaded attachment files
       if (files.attachment && Array.isArray(files.attachment)) {
         files.attachment.forEach((file, index) => {
           const attachmentName = req.body[`attachmentName_${index}`] || file.originalname;
           const payable = req.body[`attachmentPayable_${index}`] === 'true';
           const shareWithDriver = req.body[`attachmentShareWithDriver_${index}`] === 'true';
+          const attachmentType = req.body[`attachmentType_${index}`] || undefined; // bol, pod, rate_confirmation, manifest, other
           const fileUrl = getFileUrl(file);
 
           // Find existing attachment or create new one
@@ -2349,14 +2393,20 @@ export const updateOrder = async (req, res) => {
             existingAttachment.fileSize = file.size || existingAttachment.fileSize || 0;
             existingAttachment.payable = payable;
             existingAttachment.shareWithDriver = shareWithDriver;
+            if (attachmentType) existingAttachment.type = attachmentType;
+            existingAttachment.uploadedAt = new Date();
+            existingAttachment.uploadedBy = req.user?._id;
           } else {
             processedAttachments.push({
               id: Date.now() + index,
               name: attachmentName,
               url: fileUrl,
+              type: attachmentType,
               fileSize: file.size || 0,
               payable: payable,
-              shareWithDriver: shareWithDriver
+              shareWithDriver: shareWithDriver,
+              uploadedAt: new Date(),
+              uploadedBy: req.user?._id
             });
           }
         });
@@ -3123,7 +3173,7 @@ export const getOrderAttachmentSignedUrl = async (req, res) => {
           return typeMap[ext] || 'application/octet-stream';
         };
 
-        const contentType = getContentType(fileUrl);
+        const contentType = attachmentContentType(fileUrl, attachment.name) || getContentType(fileUrl);
         const contentDisposition = disposition === 'attachment'
           ? `attachment; filename="${encodeURIComponent(attachment.name || 'document')}"`
           : 'inline';
@@ -3179,6 +3229,18 @@ export const deleteOrder = async (req, res) => {
     let query = { _id: id };
     if (!isSuperadmin && userCompanyId) {
       query.company = userCompanyId;
+    }
+
+    // An order on a live or finished trip keeps its trip, POD and billing history: refuse instead
+    // of leaving the trip pointing at a deleted order.
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      const trip = await Trip.findOne({ orders: id, status: { $ne: 'cancelled' } }).select('tripNumber status').lean();
+      if (trip) {
+        return res.status(409).json({
+          success: false,
+          message: `This order is on trip ${trip.tripNumber || trip._id} (${trip.status}). Remove it from the trip or cancel the trip first, then delete the order.`
+        });
+      }
     }
 
     const order = await Order.findOneAndDelete(query);
@@ -4582,3 +4644,47 @@ export const rejectOrder = async (req, res) => {
   }
 };
 
+
+// POST /dispatcher/order/:id/documents (multipart: document, documentType, description)
+// Dispatch can attach a BOL, POD, rate confirmation, manifest or other document to an order.
+// Until now only the driver app could add documents after the order was created.
+const DISPATCH_DOCUMENT_TYPES = ['bol', 'pod', 'rate_confirmation', 'manifest', 'border_manifest', 'customs', 'other'];
+export const uploadOrderDocumentByDispatch = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Please choose a file to upload' });
+    }
+    const documentType = DISPATCH_DOCUMENT_TYPES.includes(req.body.documentType) ? req.body.documentType : 'other';
+    const query = { _id: req.params.id };
+    const companyId = getUserCompanyId(req.user);
+    if (req.user?.role !== 'superadmin' && companyId) query.company = companyId;
+
+    const order = await Order.findOne(query);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const fileUrl = req.file.location || (req.file.path ? `${process.env.BASE_URL || 'http://localhost:3000'}/${req.file.path.replace(/\\/g, '/')}` : null);
+    if (!fileUrl) return res.status(500).json({ success: false, message: 'File storage did not return a file address' });
+    const attachment = {
+      id: `${Date.now()}`,
+      name: req.file.originalname || `${documentType}.pdf`,
+      url: fileUrl,
+      type: documentType,
+      fileSize: req.file.size || 0,
+      uploadedAt: new Date(),
+      uploadedBy: req.user?._id,
+    };
+    order.attachments.push(attachment);
+    if (documentType === 'bol') {
+      if (!order.documents) order.documents = {};
+      order.documents.bol = fileUrl;
+      order.markModified('documents');
+    }
+    await order.save();
+
+    const saved = order.attachments[order.attachments.length - 1];
+    res.status(201).json({ success: true, message: 'Document uploaded', data: saved });
+  } catch (error) {
+    console.error('Dispatch order document upload error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Upload failed' });
+  }
+};
