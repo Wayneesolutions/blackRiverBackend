@@ -196,6 +196,7 @@ import {
   deleteInvoice,
   getBillingReport
 } from '../controllers/user/invoiceController.js';
+import { listInvoiceDocuments, buildInvoicePacket } from '../controllers/user/invoicePacketController.js';
 
 // Cash Flow Insights controller
 import { getCashFlowInsights } from '../controllers/hr/cashFlowController.js';
@@ -868,6 +869,20 @@ hrRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   deleteInvoice
+);
+// Invoice packet: invoice + the trip's POD and border manifest in one PDF
+hrRoute.get(
+  '/invoice/:id/documents',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  listInvoiceDocuments
+);
+hrRoute.post(
+  '/invoice/:id/packet',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  FileUploadMemory.single('invoicePdf'),
+  buildInvoicePacket
 );
 hrRoute.get(
   '/cash-flow-insights',

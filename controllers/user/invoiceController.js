@@ -330,7 +330,7 @@ export const listInvoices = async (req, res) => {
       .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl')
       .populate({
         path: 'orderId',
-        select: 'orderNumber customerOrderNo pickupLocation deliveryLocation driver coDriver truck trailer',
+        select: 'orderNumber customerOrderNo tripNo orderDate pickupLocation deliveryLocation pickupDate pickupTime deliveryDate deliveryTime pickupRefNo deliveryRefNo dropOffNumber commodity noOfPackages noOfPackagesType weight weightUnit dimensions equipment shipper receiver stops receiverStops invoiceNotes invoiceInstructions sendToFactor customerAddress customerCity customerProvince customerPostalCode customerCountry customerPrimaryPhone customerContact payableEmail driver coDriver truck trailer',
         populate: [
           {
             path: 'driver',
@@ -390,7 +390,7 @@ export const getInvoiceById = async (req, res) => {
       .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl')
       .populate({
         path: 'orderId',
-        select: 'orderNumber customerOrderNo pickupLocation deliveryLocation driver coDriver truck trailer',
+        select: 'orderNumber customerOrderNo tripNo orderDate pickupLocation deliveryLocation pickupDate pickupTime deliveryDate deliveryTime pickupRefNo deliveryRefNo dropOffNumber commodity noOfPackages noOfPackagesType weight weightUnit dimensions equipment shipper receiver stops receiverStops invoiceNotes invoiceInstructions sendToFactor customerAddress customerCity customerProvince customerPostalCode customerCountry customerPrimaryPhone customerContact payableEmail driver coDriver truck trailer',
         populate: [
           {
             path: 'driver',
