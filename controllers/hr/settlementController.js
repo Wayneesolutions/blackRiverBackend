@@ -4,6 +4,8 @@ import { Vehicle } from "../../models/driver/vehicleModel.js";
 import { Trailer } from "../../models/driver/trailerModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import mongoose from "mongoose";
+import Order from "../../models/orderModel.js";
+import { normalizePayItems, missingMemoError, sumItems, PAYROLL_ORDER_STATUSES } from "../../utils/payrollItems.js";
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -53,12 +55,179 @@ const generateSettlementId = async (companyId) => {
   return `STL-${year}-${sequence}`;
 };
 
+
+// ==================== TRUCK (OWNER-OPERATOR) SETTLEMENT ====================
+
+const KM_TO_MILES = 0.621371;
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const isOwnerOperator = (u) => !!(u && (u.details?.companyFlag ?? u.companyFlag));
+
+/**
+ * GET /hr/settlement/truck-work?truckId=&startDate=&endDate=&ratePerMile=&emptyRatePerMile=
+ * Everything a truck did in the period, whoever drove it. Loads driven by our own company
+ * drivers come back as suggested deductions ("we deduct his salary from the settlement").
+ */
+export const getTruckWork = async (req, res) => {
+  try {
+    const { truckId, startDate, endDate } = req.query;
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+
+    if (!truckId || !mongoose.Types.ObjectId.isValid(truckId)) {
+      return res.status(400).json({ success: false, message: "Select a truck" });
+    }
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, message: "Start date and end date are required" });
+    }
+
+    const truck = await Vehicle.findOne({ _id: truckId, ...(isSuperadmin ? {} : { company: companyId }) })
+      .populate('operator', 'name address city state country details companyFlag')
+      .populate('driver', 'name address city state country details companyFlag')
+      .lean();
+    if (!truck) {
+      return res.status(404).json({ success: false, message: "Truck not found" });
+    }
+
+    // Payee: the owner-operator linked to the truck (operator first, then assigned driver)
+    const owner = [truck.operator, truck.driver].find(isOwnerOperator) || truck.operator || truck.driver || null;
+    const ownerRate = Number(owner?.details?.salaryPerMile || owner?.details?.mileRate || 0);
+    const ownerTeamRate = Number(owner?.details?.mileRateTeam || 0);
+    const ownerEmptyRate = Number(owner?.details?.emptyMileRate || 0);
+    const rate = Number(req.query.ratePerMile) || ownerRate;
+    const emptyRate = Number(req.query.emptyRatePerMile) || ownerEmptyRate || rate;
+    const teamRate = Number(req.query.teamRatePerMile) || ownerTeamRate || rate;
+
+    const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate); end.setHours(23, 59, 59, 999);
+
+    const orders = await Order.find({
+      truck: truck._id,
+      status: { $in: PAYROLL_ORDER_STATUSES },
+      ...(isSuperadmin ? {} : { company: { $in: [new mongoose.Types.ObjectId(companyId), companyId] } }),
+      $or: [
+        { deliveryDate: { $gte: start, $lte: end } },
+        { deliveryDate: null, pickupDate: { $gte: start, $lte: end } },
+        { deliveryDate: null, pickupDate: null, updatedAt: { $gte: start, $lte: end } },
+      ],
+    })
+      .populate('driver', 'name details companyFlag')
+      .populate('coDriver', 'name details companyFlag')
+      .select('orderNumber customerOrderNo driver coDriver empty teamLoad pickupDate deliveryDate pickupLocation deliveryLocation distance status')
+      .sort({ pickupDate: 1, deliveryDate: 1 })
+      .lean();
+
+    // Loads already in another settlement are flagged so they are not paid twice
+    const settled = orders.length
+      ? await Settlement.find({ 'lineItems.order': { $in: orders.map(o => o._id) } }).select('settlementId lineItems.order').lean()
+      : [];
+    const settledMap = new Map();
+    settled.forEach(st => (st.lineItems || []).forEach(li => li.order && settledMap.set(String(li.order), st.settlementId)));
+
+    const companyDriverMiles = new Map(); // driverId -> { name, miles, amount }
+    const lines = orders.map(o => {
+      const miles = r2((Number(o.distance) || 0) * KM_TO_MILES);
+      const team = !!(o.coDriver || o.teamLoad);
+      const lineRate = o.empty ? emptyRate : (team ? teamRate : rate);
+      const amount = r2(miles * lineRate);
+      const drivers = [o.driver, o.coDriver].filter(Boolean);
+
+      // Our own drivers on this truck: their pay comes off the owner-operator settlement
+      drivers.filter(d => !isOwnerOperator(d)).forEach(d => {
+        const dRate = Number(o.empty ? (d.details?.emptyMileRate || d.details?.salaryPerMile || d.details?.mileRate)
+          : (team ? (d.details?.mileRateTeam || d.details?.salaryPerMile || d.details?.mileRate) : (d.details?.salaryPerMile || d.details?.mileRate))) || 0;
+        const cur = companyDriverMiles.get(String(d._id)) || { driverId: d._id, name: d.name, miles: 0, amount: 0, rate: dRate };
+        cur.miles = r2(cur.miles + miles);
+        cur.amount = r2(cur.amount + miles * dRate);
+        companyDriverMiles.set(String(d._id), cur);
+      });
+
+      return {
+        order: o._id,
+        loadNumber: o.empty ? '' : (o.orderNumber || o.customerOrderNo || ''),
+        tripType: o.empty ? (team ? 'EMPTY-T' : 'EMPTY') : (team ? 'TEAM' : 'SOLO'),
+        driverNames: drivers.map(d => d.name).join(' / '),
+        periodFrom: o.pickupDate || o.deliveryDate,
+        periodTo: o.deliveryDate || o.pickupDate,
+        origin: o.pickupLocation?.place || '',
+        destination: o.deliveryLocation?.place || '',
+        payType: 'Paid Per Mile',
+        rate: lineRate,
+        miles,
+        amount,
+        status: o.status,
+        alreadySettledIn: settledMap.get(String(o._id)) || null,
+      };
+    });
+
+    const suggestedDeductions = Array.from(companyDriverMiles.values())
+      .filter(d => d.miles > 0)
+      .map(d => ({
+        memo: `PAYROLL: DRIVER DEDUCTION FOR ${d.miles.toFixed(2)} MILES (${d.name})`,
+        amount: r2(d.amount),
+        driverId: d.driverId,
+        miles: d.miles,
+        rate: d.rate,
+      }));
+
+    const payeeAddress = owner ? [owner.address, owner.city, owner.state, owner.country].filter(Boolean).join(', ') : '';
+    res.json({
+      success: true,
+      data: {
+        truck: {
+          _id: truck._id,
+          truckNumber: truck.internalId || truck.unitNumber || truck.plateNumber || '',
+          ownership: truck.ownership,
+        },
+        payee: owner ? { _id: owner._id, name: owner.name, address: payeeAddress, isOwnerOperator: isOwnerOperator(owner) } : null,
+        rates: { ratePerMile: rate, teamRatePerMile: teamRate, emptyRatePerMile: emptyRate },
+        lines,
+        suggestedDeductions,
+        totals: {
+          loads: lines.length,
+          miles: r2(lines.reduce((s, l) => s + l.miles, 0)),
+          grossPay: r2(lines.filter(l => !l.alreadySettledIn).reduce((s, l) => s + l.amount, 0)),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching truck work:", error);
+    res.status(500).json({ success: false, message: error.message || "Error fetching truck work" });
+  }
+};
+
 // ==================== SETTLEMENTS ====================
 
 // Create Settlement
 export const createSettlement = async (req, res) => {
   try {
-    const { driver, payPeriod, grossPay, deductions = 0, additions = 0, status = 'Pending', paymentMethod, paymentReference, notes, appliedDeductions, milesRecords } = req.body;
+    const { driver, payPeriod, grossPay, status = 'Pending', paymentMethod, paymentReference, notes, appliedDeductions, milesRecords } = req.body;
+    let { deductions = 0, additions = 0 } = req.body;
+
+    // Itemised lines (memo required on each addition / deduction)
+    const additionItems = normalizePayItems(req.body.additionItems);
+    const deductionItems = normalizePayItems(req.body.deductionItems);
+    const memoError = missingMemoError(additionItems, deductionItems);
+    if (memoError) {
+      return res.status(400).json({ success: false, message: memoError });
+    }
+    if (Array.isArray(req.body.additionItems)) additions = sumItems(additionItems);
+    if (Array.isArray(req.body.deductionItems)) deductions = sumItems(deductionItems);
+
+    const truckId = req.body.truck && mongoose.Types.ObjectId.isValid(req.body.truck) ? req.body.truck : null;
+    const lineItems = Array.isArray(req.body.lineItems) ? req.body.lineItems.map(l => ({
+      order: l.order && mongoose.Types.ObjectId.isValid(l.order) ? l.order : undefined,
+      loadNumber: l.loadNumber || '',
+      tripType: l.tripType || '',
+      driverNames: l.driverNames || '',
+      periodFrom: l.periodFrom ? new Date(l.periodFrom) : undefined,
+      periodTo: l.periodTo ? new Date(l.periodTo) : undefined,
+      origin: l.origin || '',
+      destination: l.destination || '',
+      payType: l.payType || 'Paid Per Mile',
+      rate: Number(l.rate) || 0,
+      miles: Math.round((Number(l.miles) || 0) * 100) / 100,
+      amount: Math.round((Number(l.amount) || 0) * 100) / 100,
+    })) : [];
 
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
@@ -70,13 +239,30 @@ export const createSettlement = async (req, res) => {
       });
     }
 
-    // Validate driver exists
-    const driverUser = await User.findById(driver);
-    if (!driverUser) {
+    // Validate payee: a driver is required for driver settlements; truck settlements may
+    // have no owner profile linked yet (payeeName is printed instead)
+    const driverUser = driver ? await User.findById(driver) : null;
+    if (!driverUser && !truckId) {
       return res.status(404).json({
         success: false,
         message: "Driver not found"
       });
+    }
+
+    let truckDoc = null;
+    if (truckId) {
+      truckDoc = await Vehicle.findById(truckId).select('internalId unitNumber plateNumber').lean();
+      if (!truckDoc) {
+        return res.status(404).json({ success: false, message: "Truck not found" });
+      }
+      // Stop paying the same load twice
+      const orderIds = lineItems.map(l => l.order).filter(Boolean);
+      if (orderIds.length) {
+        const dup = await Settlement.findOne({ company: companyId, 'lineItems.order': { $in: orderIds } }).select('settlementId').lean();
+        if (dup) {
+          return res.status(409).json({ success: false, message: `Some of these loads are already in settlement ${dup.settlementId}. Untick them and try again.` });
+        }
+      }
     }
 
     // Auto-compute grossPay from miles if caller doesn't provide it (or sends 0)
@@ -84,7 +270,12 @@ export const createSettlement = async (req, res) => {
     let computedTotalMiles = 0;
     let computedRatePerMile = 0;
 
-    if ((!grossPay || Number(grossPay) === 0) && payPeriod?.startDate && payPeriod?.endDate) {
+    if (lineItems.length > 0) {
+      // Truck settlement: gross pay is the sum of the loads
+      computedGrossPay = Math.round(lineItems.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+      computedTotalMiles = Math.round(lineItems.reduce((s, l) => s + l.miles, 0) * 100) / 100;
+      computedRatePerMile = computedTotalMiles > 0 ? Math.round((computedGrossPay / computedTotalMiles) * 100) / 100 : 0;
+    } else if (driverUser && (!grossPay || Number(grossPay) === 0) && payPeriod?.startDate && payPeriod?.endDate) {
       // Pull miles records for this driver in the pay period
       const periodMiles = await MilesTracking.find({
         driver,
@@ -118,7 +309,18 @@ export const createSettlement = async (req, res) => {
       try {
         settlement = new Settlement({
           settlementId,
-          driver,
+          driver: driverUser ? driverUser._id : null,
+          settlementType: truckId ? 'truck' : 'driver',
+          truck: truckId,
+          truckNumber: truckDoc ? (truckDoc.internalId || truckDoc.unitNumber || truckDoc.plateNumber || '') : undefined,
+          payeeName: req.body.payeeName || driverUser?.name || '',
+          payeeAddress: req.body.payeeAddress || '',
+          gstNumber: req.body.gstNumber || '',
+          billNumber: req.body.billNumber || '',
+          chequeNumber: req.body.chequeNumber || '',
+          lineItems,
+          additionItems,
+          deductionItems,
           payPeriod: {
             startDate: new Date(payPeriod.startDate),
             endDate: new Date(payPeriod.endDate)
@@ -169,6 +371,7 @@ export const createSettlement = async (req, res) => {
     }
     await settlement.populate([
       { path: 'driver', select: 'name email phone internalId' },
+      { path: 'truck', select: 'internalId unitNumber plateNumber' },
       { path: 'appliedDeductions', select: 'name type amount' },
       { path: 'createdBy', select: 'name email' }
     ]);
@@ -201,11 +404,15 @@ export const getSettlements = async (req, res) => {
 
     // Search filter
     if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { settlementId: { $regex: search, $options: 'i' } },
-        { 'driver.name': { $regex: search, $options: 'i' } }
+        { settlementId: { $regex: safe, $options: 'i' } },
+        { truckNumber: { $regex: safe, $options: 'i' } },
+        { payeeName: { $regex: safe, $options: 'i' } }
       ];
     }
+    if (req.query.settlementType) filter.settlementType = req.query.settlementType;
+    if (req.query.truck && mongoose.Types.ObjectId.isValid(req.query.truck)) filter.truck = req.query.truck;
 
     // Status filter
     if (status) {
@@ -232,6 +439,7 @@ export const getSettlements = async (req, res) => {
 
     const settlements = await Settlement.find(filter)
       .populate('driver', 'name email phone internalId')
+      .populate('truck', 'internalId unitNumber plateNumber')
       .populate('appliedDeductions', 'name type amount')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 })
@@ -273,6 +481,7 @@ export const getSettlementById = async (req, res) => {
 
     const settlement = await Settlement.findOne(filter)
       .populate('driver', 'name email phone internalId')
+      .populate('truck', 'internalId unitNumber plateNumber')
       .populate('appliedDeductions')
       .populate('milesRecords')
       .populate('createdBy', 'name email')
@@ -332,6 +541,18 @@ export const updateSettlement = async (req, res) => {
     if (grossPay !== undefined) settlement.grossPay = Number(grossPay);
     if (deductions !== undefined) settlement.deductions = Number(deductions);
     if (additions !== undefined) settlement.additions = Number(additions);
+    if (Array.isArray(req.body.additionItems) || Array.isArray(req.body.deductionItems)) {
+      const additionItems = normalizePayItems(req.body.additionItems ?? settlement.additionItems);
+      const deductionItems = normalizePayItems(req.body.deductionItems ?? settlement.deductionItems);
+      const memoError = missingMemoError(additionItems, deductionItems);
+      if (memoError) return res.status(400).json({ success: false, message: memoError });
+      settlement.additionItems = additionItems;
+      settlement.deductionItems = deductionItems;
+      settlement.additions = sumItems(additionItems);
+      settlement.deductions = sumItems(deductionItems);
+    }
+    if (req.body.chequeNumber !== undefined) settlement.chequeNumber = req.body.chequeNumber;
+    if (req.body.billNumber !== undefined) settlement.billNumber = req.body.billNumber;
     if (status) settlement.status = status;
     if (paymentDate) settlement.paymentDate = new Date(paymentDate);
     if (paymentMethod) settlement.paymentMethod = paymentMethod;

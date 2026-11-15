@@ -471,6 +471,12 @@ const orderSchema = new mongoose.Schema(
     dispatcher: { type: String, default: '' },
     dispatcherEmail: { type: String, default: '' },
     bookedForCarrier: { type: Boolean, default: false },
+    // Load sold (booked) to another trucking company: who hauls it and what we pay them.
+    // A payable (Bill) is created in Accounts Payable for the carrier rate.
+    carrier: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
+    carrierName: { type: String, default: '' },
+    carrierRate: { type: Number, default: 0 },
+    carrierCurrency: { type: String, enum: ['CAD', 'USD', 'INR'], default: 'CAD' },
     sendToFactor: { type: Boolean, default: false },
 
     // Tax Configuration

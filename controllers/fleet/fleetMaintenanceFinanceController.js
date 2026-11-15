@@ -62,11 +62,14 @@ const isValidObjectId = (id) => {
 };
 
 // ✅ Get Maintenance Expense Summary
+// Client (15 Nov): show how much we spend on each truck and trailer, per month, with a custom
+// date range; in-house repairs and outside breakdowns; parts; what each unit was bought for.
+// GET /hr/fleet-maintenance/expense-summary?startDate=&endDate=&unitType=Truck|Trailer&search=
 export const getMaintenanceExpenseSummary = async (req, res) => {
   try {
     const companyId = getUserCompanyId(req.user);
     const isSuperadmin = req.user?.role === 'superadmin';
-    const { search } = req.query;
+    const { search, startDate, endDate, unitType } = req.query;
 
     if (!isSuperadmin && !companyId) {
       return res.json({
@@ -79,293 +82,225 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
     const companyFilter = companyId ? { company: companyId } : null;
     const query = await getCombinedFilter(req.user, companyFilter) || {};
 
-    // Get fleet units FIRST for vehicle matching
-    const fleetUnits = await FleetUnit.find(query).select('_id internalId unitNo licensePlate odometer currentOdometer').lean();
-    const odometerMap = {};
-    const vehicleNameMap = {}; // Map vehicle keys to display names
-    fleetUnits.forEach(unit => {
-      const unitId = unit.internalId || unit.unitNo;
-      const unitKey = unit._id.toString();
-      if (unitId) {
-        odometerMap[unitId] = unit.currentOdometer || unit.odometer || 0;
-        vehicleNameMap[unitKey] = unitId;
+    // Date range (inclusive). Without a range every record counts (old behaviour).
+    const from = startDate ? new Date(startDate) : null;
+    if (from) from.setHours(0, 0, 0, 0);
+    const to = endDate ? new Date(endDate) : null;
+    if (to) to.setHours(23, 59, 59, 999);
+    const inRange = (d) => {
+      if (!from && !to) return true;
+      if (!d) return false;
+      const t = new Date(d);
+      return (!from || t >= from) && (!to || t <= to);
+    };
+    const monthKey = (d) => {
+      const t = d ? new Date(d) : null;
+      return t && !isNaN(t) ? `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}` : 'Undated';
+    };
+
+    // Units: Fleet Maintenance units (FleetUnit), trucks (Vehicle) and trailers (Trailer)
+    const { Trailer } = await import("../../models/driver/trailerModel.js");
+    const { Expense } = await import("../../models/hr/expenseModel.js");
+    const [fleetUnits, vehicles, trailers] = await Promise.all([
+      FleetUnit.find(query).select('_id internalId unitNo licensePlate odometer currentOdometer unitType purchasePrice').lean(),
+      Vehicle.find(query).select('_id internalId unitNumber plateNumber odometer assetValue purchasePrice').lean(),
+      Trailer.find(query).select('_id unitNumber trailer plateNumber purchasePrice').lean(),
+    ]);
+
+    const units = new Map(); // key -> unit info
+    const unitName = new Map(); // any name/number -> key
+    const register = (key, name, type, odometerMiles, purchasePrice) => {
+      if (!units.has(key)) units.set(key, { key, name, type, odometerMiles: odometerMiles || 0, purchasePrice: Number(purchasePrice) || 0 });
+      if (name) unitName.set(String(name).trim().toLowerCase(), key);
+    };
+    fleetUnits.forEach(u => {
+      const type = /trailer/i.test(u.unitType || '') ? 'Trailer' : 'Truck';
+      register(u._id.toString(), u.internalId || u.unitNo || u.licensePlate || u._id.toString(), type,
+        u.currentOdometer || u.odometer || 0, u.purchasePrice);
+      [u.unitNo, u.licensePlate].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), u._id.toString()));
+    });
+    vehicles.forEach(v => {
+      // Vehicle odometer is stored in km
+      register(v._id.toString(), v.internalId || v.unitNumber || v.plateNumber || v._id.toString(), 'Truck',
+        (Number(v.odometer) || 0) * 0.621371, v.purchasePrice || v.assetValue);
+      [v.unitNumber, v.plateNumber].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), v._id.toString()));
+    });
+    trailers.forEach(t => {
+      register(t._id.toString(), t.unitNumber || t.trailer || t.plateNumber || t._id.toString(), 'Trailer', 0, t.purchasePrice);
+      [t.trailer, t.plateNumber].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), t._id.toString()));
+    });
+
+    const resolveKey = (id, name, fallbackType = 'Truck') => {
+      if (id && units.has(String(id))) return String(id);
+      const byName = name ? unitName.get(String(name).trim().toLowerCase()) : null;
+      if (byName) return byName;
+      if (!name && !id) return null;
+      const key = String(name || id);
+      register(key, String(name || id), fallbackType, 0, 0);
+      return key;
+    };
+
+    const spend = new Map(); // key -> totals
+    const fleetMonthly = {};
+    const add = (key, category, cost, date) => {
+      if (!key || !(cost > 0) || !inRange(date)) return;
+      if (!spend.has(key)) {
+        spend.set(key, { total: 0, inHouse: 0, outside: 0, parts: 0, services: 0, otherExpenses: 0, entries: 0, monthly: {}, serviceTypes: {} });
       }
-      // Also map by internalId and unitNo for matching
-      if (unit.internalId) {
-        vehicleNameMap[unit.internalId] = unitKey;
-      }
-      if (unit.unitNo) {
-        vehicleNameMap[unit.unitNo] = unitKey;
+      const e = spend.get(key);
+      e.total += cost;
+      e.entries += 1;
+      if (category === 'inHouse') e.inHouse += cost;
+      else if (category === 'outside') e.outside += cost;
+      else if (category === 'parts') e.parts += cost;
+      else if (category === 'services') e.services += cost;
+      else e.otherExpenses += cost;
+      const m = monthKey(date);
+      e.monthly[m] = (e.monthly[m] || 0) + cost;
+      fleetMonthly[m] = (fleetMonthly[m] || 0) + cost;
+      return e;
+    };
+
+    // 1. Maintenance orders (in-house mechanic or outside shop / roadside breakdown)
+    const generalRepairs = await GeneralRepair.find(query)
+      .select('unitNumber unitReference unitSource description amount completionTotalAmount serviceDate completionDate mechanicType serviceProvider')
+      .lean();
+    generalRepairs.forEach(gr => {
+      const key = resolveKey(gr.unitReference, gr.unitNumber, gr.unitSource === 'trailer' ? 'Trailer' : 'Truck');
+      const e = add(key, gr.mechanicType === 'external' ? 'outside' : 'inHouse', generalRepairCost(gr), gr.completionDate || gr.serviceDate);
+      if (e) {
+        const label = gr.mechanicType === 'external' ? 'Outside repairs' : 'In-house repairs';
+        e.serviceTypes[label] = (e.serviceTypes[label] || 0) + generalRepairCost(gr);
       }
     });
 
-    // Get all work orders and vehicle services
-    const workOrders = await WorkOrder.find(query)
-      .populate('vehicleId', 'internalId plateNumber make model')
-      .lean();
-
+    // 2. Vehicle services not already turned into a maintenance order
     const linkedServiceIds = await getLinkedServiceIds(query);
     const vehicleServices = await VehicleService.find({ ...query, _id: { $nin: linkedServiceIds } })
-      .populate('vehicleId', 'internalId plateNumber make model')
+      .select('vehicleId unitNumber unitType serviceType actualCost estimatedCost amount serviceDate createdAt')
       .lean();
-
-    // Maintenance orders (Fleet Maintenance > Maintenance Orders Log)
-    const generalRepairs = await GeneralRepair.find(query)
-      .select('unitNumber unitReference description amount completionTotalAmount serviceDate')
-      .lean();
-
-    // Trucks from the Fleet Maintenance module (Vehicle model) for name + odometer lookup
-    const vehicles = await Vehicle.find(query).select('_id internalId unitNumber plateNumber odometer').lean();
-
-    // Aggregate expenses by vehicle
-    const vehicleExpenses = {};
-
-    // Get Parts Cost Log entries for expenses
-    const partsCostLogEntries = await PartsCostLog.find(query)
-      .populate('vehicleId', 'internalId unitNo licensePlate')
-      .lean();
-
-    // Build a map of vehicle IDs to their display names (internalId or unitNo)
-    const vehicleMap = {};
-    fleetUnits.forEach(unit => {
-      const key = unit._id.toString();
-      vehicleMap[key] = unit.internalId || unit.unitNo || key;
-    });
-
-    // Process work orders
-    workOrders.forEach(wo => {
-      // Try multiple ways to identify the vehicle
-      let vehicleKey = null;
-      let vehicleName = 'Unknown';
-      
-      if (wo.vehicleId?._id) {
-        const vehId = wo.vehicleId._id.toString();
-        vehicleKey = vehId;
-        vehicleName = wo.vehicleId.internalId || wo.vehicleId.plateNumber || vehicleMap[vehId] || wo.unitNumber || 'Unknown';
-      } else if (wo.unitNumber) {
-        // Try to find FleetUnit by unitNumber or internalId
-        const matchedUnit = fleetUnits.find(u => u.unitNo === wo.unitNumber || u.internalId === wo.unitNumber);
-        if (matchedUnit) {
-          vehicleKey = matchedUnit._id.toString();
-          vehicleName = matchedUnit.internalId || matchedUnit.unitNo || wo.unitNumber;
-        } else {
-          vehicleKey = wo.unitNumber;
-          vehicleName = wo.unitNumber;
-        }
-      }
-      
-      if (!vehicleKey) return;
-      
-      if (!vehicleExpenses[vehicleKey]) {
-        vehicleExpenses[vehicleKey] = {
-          vehicle: vehicleName,
-          vehicleId: vehicleKey,
-          totalExpense: 0,
-          expenses: [],
-          serviceTypes: {}
-        };
-      }
-      
-      // Use actualCost if available, otherwise estimatedCost
-      const cost = Number(wo.actualCost) || Number(wo.estimatedCost) || 0;
-      vehicleExpenses[vehicleKey].totalExpense += cost;
-      
-      const serviceType = wo.issue || 'Other';
-      vehicleExpenses[vehicleKey].serviceTypes[serviceType] = 
-        (vehicleExpenses[vehicleKey].serviceTypes[serviceType] || 0) + cost;
-    });
-
-    // Process vehicle services
     vehicleServices.forEach(vs => {
-      // Try multiple ways to identify the vehicle
-      let vehicleKey = null;
-      let vehicleName = 'Unknown';
-      
-      if (vs.vehicleId?._id) {
-        const vehId = vs.vehicleId._id.toString();
-        vehicleKey = vehId;
-        vehicleName = vs.vehicleId.internalId || vehicleMap[vehId] || vs.unitNumber || 'Unknown';
-      } else if (vs.unitNumber) {
-        // Try to find FleetUnit by unitNumber or internalId
-        const matchedUnit = fleetUnits.find(u => u.unitNo === vs.unitNumber || u.internalId === vs.unitNumber);
-        if (matchedUnit) {
-          vehicleKey = matchedUnit._id.toString();
-          vehicleName = matchedUnit.internalId || matchedUnit.unitNo || vs.unitNumber;
-        } else {
-          vehicleKey = vs.unitNumber;
-          vehicleName = vs.unitNumber;
-        }
-      }
-      
-      if (!vehicleKey) return;
-      
-      if (!vehicleExpenses[vehicleKey]) {
-        vehicleExpenses[vehicleKey] = {
-          vehicle: vehicleName,
-          vehicleId: vehicleKey,
-          totalExpense: 0,
-          expenses: [],
-          serviceTypes: {}
-        };
-      }
-      
-      // Use actualCost if available, otherwise estimatedCost
-      const cost = Number(vs.actualCost) || Number(vs.estimatedCost) || 0;
-      vehicleExpenses[vehicleKey].totalExpense += cost;
-      
-      const serviceType = vs.serviceType || 'Other';
-      vehicleExpenses[vehicleKey].serviceTypes[serviceType] = 
-        (vehicleExpenses[vehicleKey].serviceTypes[serviceType] || 0) + cost;
+      const cost = Number(vs.actualCost) || Number(vs.amount) || Number(vs.estimatedCost) || 0;
+      const key = resolveKey(vs.vehicleId, vs.unitNumber, /trailer/i.test(vs.unitType || '') ? 'Trailer' : 'Truck');
+      const e = add(key, 'services', cost, vs.serviceDate || vs.createdAt);
+      if (e) e.serviceTypes[vs.serviceType || 'Service'] = (e.serviceTypes[vs.serviceType || 'Service'] || 0) + cost;
     });
 
-    // Process Parts Cost Log entries
+    // 3. Work orders
+    const workOrders = await WorkOrder.find(query)
+      .select('vehicleId unitNumber issue actualCost estimatedCost completionDate createdAt')
+      .lean();
+    workOrders.forEach(wo => {
+      const cost = Number(wo.actualCost) || Number(wo.estimatedCost) || 0;
+      const key = resolveKey(wo.vehicleId, wo.unitNumber);
+      const e = add(key, 'inHouse', cost, wo.completionDate || wo.createdAt);
+      if (e) e.serviceTypes[wo.issue || 'Work order'] = (e.serviceTypes[wo.issue || 'Work order'] || 0) + cost;
+    });
+
+    // 4. Parts
+    const partsCostLogEntries = await PartsCostLog.find(query).lean();
     partsCostLogEntries.forEach(pcl => {
-      // Try multiple ways to identify the vehicle
-      let vehicleKey = null;
-      let vehicleName = 'Unknown';
-      
-      if (pcl.vehicleId?._id) {
-        const vehId = pcl.vehicleId._id.toString();
-        vehicleKey = vehId;
-        vehicleName = pcl.vehicleId.internalId || pcl.vehicleId.unitNo || vehicleMap[vehId] || pcl.vehicle || 'Unknown';
-      } else if (pcl.vehicle) {
-        // Try to find FleetUnit by unitNumber or internalId
-        const matchedUnit = fleetUnits.find(u => u.unitNo === pcl.vehicle || u.internalId === pcl.vehicle);
-        if (matchedUnit) {
-          vehicleKey = matchedUnit._id.toString();
-          vehicleName = matchedUnit.internalId || matchedUnit.unitNo || pcl.vehicle;
-        } else {
-          vehicleKey = pcl.vehicle;
-          vehicleName = pcl.vehicle;
-        }
-      }
-      
-      if (!vehicleKey) return;
-      
-      if (!vehicleExpenses[vehicleKey]) {
-        vehicleExpenses[vehicleKey] = {
-          vehicle: vehicleName,
-          vehicleId: vehicleKey,
-          totalExpense: 0,
-          expenses: [],
-          serviceTypes: {}
-        };
-      }
-      
-      const cost = Number(pcl.totalCost) || 0;
-      vehicleExpenses[vehicleKey].totalExpense += cost;
-      
-      vehicleExpenses[vehicleKey].serviceTypes['Parts'] =
-        (vehicleExpenses[vehicleKey].serviceTypes['Parts'] || 0) + cost;
+      const key = resolveKey(pcl.vehicleId, pcl.vehicle);
+      const e = add(key, 'parts', Number(pcl.totalCost) || 0, pcl.dateOfUse || pcl.createdAt);
+      if (e) e.serviceTypes['Parts'] = (e.serviceTypes['Parts'] || 0) + (Number(pcl.totalCost) || 0);
     });
 
-    // Process maintenance orders (GeneralRepair)
-    generalRepairs.forEach(gr => {
-      const cost = generalRepairCost(gr);
-      if (cost <= 0) return;
-
-      let vehicleKey = null;
-      let vehicleName = gr.unitNumber || 'Unknown';
-
-      const refId = gr.unitReference ? gr.unitReference.toString() : null;
-      const matchedUnit = fleetUnits.find(u =>
-        (refId && u._id.toString() === refId) || u.unitNo === gr.unitNumber || u.internalId === gr.unitNumber
-      );
-      const matchedVehicle = !matchedUnit && vehicles.find(v =>
-        (refId && v._id.toString() === refId) || v.internalId === gr.unitNumber || v.unitNumber === gr.unitNumber || v.plateNumber === gr.unitNumber
-      );
-
-      if (matchedUnit) {
-        vehicleKey = matchedUnit._id.toString();
-        vehicleName = matchedUnit.internalId || matchedUnit.unitNo || gr.unitNumber;
-      } else if (matchedVehicle) {
-        vehicleKey = matchedVehicle._id.toString();
-        vehicleName = matchedVehicle.internalId || matchedVehicle.unitNumber || matchedVehicle.plateNumber || gr.unitNumber;
-      } else if (gr.unitNumber) {
-        vehicleKey = gr.unitNumber;
-      }
-
-      if (!vehicleKey) return;
-
-      if (!vehicleExpenses[vehicleKey]) {
-        vehicleExpenses[vehicleKey] = {
-          vehicle: vehicleName,
-          vehicleId: vehicleKey,
-          totalExpense: 0,
-          expenses: [],
-          serviceTypes: {}
-        };
-      }
-
-      vehicleExpenses[vehicleKey].totalExpense += cost;
-      vehicleExpenses[vehicleKey].serviceTypes['Repairs'] =
-        (vehicleExpenses[vehicleKey].serviceTypes['Repairs'] || 0) + cost;
+    // 5. Expenses entered in Expense Management against a truck or trailer
+    const unitExpenses = await Expense.find({ ...query, $or: [{ vehicle: { $ne: null } }, { trailer: { $ne: null } }] })
+      .populate('categoryId', 'name')
+      .select('vehicle trailer amount date categoryId type')
+      .lean();
+    unitExpenses.forEach(ex => {
+      const key = resolveKey(ex.vehicle || ex.trailer, null, ex.trailer ? 'Trailer' : 'Truck');
+      const label = ex.categoryId?.name || ex.type || 'Expenses';
+      const e = add(key, 'other', Number(ex.amount) || 0, ex.date);
+      if (e) e.serviceTypes[label] = (e.serviceTypes[label] || 0) + (Number(ex.amount) || 0);
     });
 
-    // Format response
-    const summary = Object.values(vehicleExpenses).map(exp => {
-      // Try to get odometer reading - match by vehicle name (internalId or unitNo)
-      let odometer = 0;
-      const matchedUnit = fleetUnits.find(u => 
-        (u.internalId && u.internalId === exp.vehicle) || 
-        (u.unitNo && u.unitNo === exp.vehicle) ||
-        (u._id.toString() === exp.vehicleId)
-      );
-      if (matchedUnit) {
-        odometer = matchedUnit.currentOdometer || matchedUnit.odometer || 0;
-      } else if (odometerMap[exp.vehicle]) {
-        odometer = odometerMap[exp.vehicle];
-      } else {
-        // Truck from the Vehicle model: odometer is stored in km -> convert to miles
-        const matchedVehicle = vehicles.find(v =>
-          v._id.toString() === exp.vehicleId || v.internalId === exp.vehicle || v.unitNumber === exp.vehicle
-        );
-        if (matchedVehicle?.odometer) {
-          odometer = matchedVehicle.odometer * 0.621371;
-        }
-      }
-      
-      // Calculate cost per mile (convert km to miles if needed, or use miles directly)
-      // Assuming odometer is in miles, if in km, multiply by 0.621371
-      const costPerMile = odometer > 0 ? (exp.totalExpense / odometer) : 0;
-
-      // Create breakdown string
-      const breakdown = Object.entries(exp.serviceTypes)
-        .filter(([type, cost]) => Number(cost) > 0)
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    let summary = Array.from(spend.entries()).map(([key, e]) => {
+      const u = units.get(key) || { name: key, type: 'Truck', odometerMiles: 0, purchasePrice: 0 };
+      const breakdown = Object.entries(e.serviceTypes)
+        .filter(([, cost]) => Number(cost) > 0)
+        .sort((x, y) => y[1] - x[1])
         .map(([type, cost]) => `${type}: $${Number(cost).toFixed(2)}`)
         .join(', ');
-
-      // Get top 5 expense types
-      const topExpenses = Object.entries(exp.serviceTypes)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([type]) => type);
-
       return {
-        vehicle: exp.vehicle,
-        totalExpense: exp.totalExpense,
-        costPerMile: parseFloat(costPerMile.toFixed(2)),
+        vehicle: u.name,
+        vehicleId: key,
+        unitType: u.type,
+        totalExpense: r2(e.total),
+        inHouseRepairs: r2(e.inHouse),
+        outsideRepairs: r2(e.outside),
+        parts: r2(e.parts),
+        services: r2(e.services),
+        otherExpenses: r2(e.otherExpenses),
+        entries: e.entries,
+        purchasePrice: r2(u.purchasePrice),
+        monthly: Object.fromEntries(Object.entries(e.monthly).sort().map(([m, v]) => [m, r2(v)])),
+        costPerMile: u.odometerMiles > 0 ? r2(e.total / u.odometerMiles) : 0,
         breakdown: breakdown || 'No breakdown available',
-        topExpenses: topExpenses
+        topExpenses: Object.entries(e.serviceTypes).sort((x, y) => y[1] - x[1]).slice(0, 5).map(([t]) => t),
       };
-    }).filter(exp => exp.totalExpense > 0 || exp.breakdown !== 'No breakdown available'); // Filter out entries with no expenses
+    });
 
-    // Apply search filter if provided
-    let filteredSummary = summary;
+    if (unitType) summary = summary.filter(s => s.unitType.toLowerCase() === String(unitType).toLowerCase());
     if (search) {
-      const searchLower = search.toLowerCase();
-      filteredSummary = summary.filter(s => 
-        s.vehicle.toLowerCase().includes(searchLower)
-      );
+      const q = String(search).toLowerCase();
+      summary = summary.filter(s => s.vehicle.toLowerCase().includes(q));
     }
+    summary.sort((x, y) => y.totalExpense - x.totalExpense);
 
+    const months = Object.keys(fleetMonthly).filter(m => m !== 'Undated').sort();
     res.json({
       success: true,
       message: 'Maintenance expense summary fetched successfully',
-      data: filteredSummary
+      data: summary,
+      meta: {
+        startDate: from, endDate: to,
+        months,
+        monthlyTotals: Object.fromEntries(months.map(m => [m, r2(fleetMonthly[m])])),
+        totals: {
+          total: r2(summary.reduce((s, x) => s + x.totalExpense, 0)),
+          trucks: r2(summary.filter(x => x.unitType === 'Truck').reduce((s, x) => s + x.totalExpense, 0)),
+          trailers: r2(summary.filter(x => x.unitType === 'Trailer').reduce((s, x) => s + x.totalExpense, 0)),
+          inHouseRepairs: r2(summary.reduce((s, x) => s + x.inHouseRepairs, 0)),
+          outsideRepairs: r2(summary.reduce((s, x) => s + x.outsideRepairs, 0)),
+          parts: r2(summary.reduce((s, x) => s + x.parts, 0)),
+          purchasePrice: r2(Array.from(units.values()).filter(u => !unitType || u.type.toLowerCase() === String(unitType).toLowerCase()).reduce((s, u) => s + (u.purchasePrice || 0), 0)),
+        },
+      },
     });
   } catch (err) {
     console.error('Error fetching maintenance expense summary:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ✅ Set what a truck / trailer was bought for (shown in the fleet spend report)
+// PATCH /hr/fleet-maintenance/unit-purchase-price  { unitId, purchasePrice, purchaseDate }
+export const setUnitPurchasePrice = async (req, res) => {
+  try {
+    const { unitId, purchasePrice, purchaseDate } = req.body;
+    if (!unitId || !isValidObjectId(unitId)) {
+      return res.status(400).json({ success: false, message: 'Select a unit' });
+    }
+    const price = Number(purchasePrice);
+    if (isNaN(price) || price < 0) {
+      return res.status(400).json({ success: false, message: 'Purchase price must be a positive number' });
+    }
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+    const filter = { _id: unitId, ...(isSuperadmin ? {} : { company: companyId }) };
+    const update = { purchasePrice: price, ...(purchaseDate ? { purchaseDate: new Date(purchaseDate) } : {}) };
+    const { Trailer } = await import("../../models/driver/trailerModel.js");
+    const updated = (await FleetUnit.findOneAndUpdate(filter, update, { new: true }))
+      || (await Vehicle.findOneAndUpdate(filter, update, { new: true }))
+      || (await Trailer.findOneAndUpdate(filter, update, { new: true }));
+    if (!updated) return res.status(404).json({ success: false, message: 'Unit not found' });
+    res.json({ success: true, message: 'Purchase price saved', data: { unitId, purchasePrice: price } });
+  } catch (err) {
+    console.error('Error saving purchase price:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };

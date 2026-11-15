@@ -6,11 +6,52 @@ const settlementSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  // Payee (owner-operator or driver). Optional for truck settlements whose truck has no
+  // owner profile linked yet - payeeName is printed instead.
   driver: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
-    required: true
+    required: function () { return !this.truck; }
   },
+  // Owner-operator settlements are made per TRUCK (client: "we make settlement for truck and pay")
+  settlementType: { type: String, enum: ['driver', 'truck'], default: 'driver' },
+  truck: { type: mongoose.Schema.Types.ObjectId, ref: "Vehicle", default: null },
+  truckNumber: { type: String },
+  payeeName: { type: String },
+  payeeAddress: { type: String },
+  gstNumber: { type: String },
+  billNumber: { type: String },
+  chequeNumber: { type: String },
+  // Loads run by the truck in the period (whoever drove them)
+  lineItems: [{
+    order: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
+    loadNumber: { type: String },
+    tripType: { type: String }, // TEAM, SOLO, EMPTY
+    driverNames: { type: String },
+    periodFrom: { type: Date },
+    periodTo: { type: Date },
+    origin: { type: String },
+    destination: { type: String },
+    payType: { type: String, default: 'Paid Per Mile' },
+    rate: { type: Number, default: 0 },
+    miles: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 }
+  }],
+  // Every addition / deduction says what it is for (e.g. "Driver deduction for 5804 miles")
+  additionItems: [{
+    memo: { type: String, required: true },
+    amount: { type: Number, default: 0 },
+    date: { type: Date },
+    load: { type: String },
+    gst: { type: Number, default: 0 }
+  }],
+  deductionItems: [{
+    memo: { type: String, required: true },
+    amount: { type: Number, default: 0 },
+    date: { type: Date },
+    load: { type: String },
+    gst: { type: Number, default: 0 }
+  }],
   payPeriod: {
     startDate: {
       type: Date,
@@ -98,6 +139,8 @@ const settlementSchema = new mongoose.Schema({
 // Indexes for efficient queries
 settlementSchema.index({ driver: 1, 'payPeriod.startDate': 1, 'payPeriod.endDate': 1 });
 settlementSchema.index({ status: 1 });
+settlementSchema.index({ truck: 1, 'payPeriod.startDate': 1 });
+settlementSchema.index({ 'lineItems.order': 1 });
 settlementSchema.index({ company: 1, createdAt: -1 });
 // Compound unique index: settlementId must be unique per company
 settlementSchema.index({ settlementId: 1, company: 1 }, { unique: true });

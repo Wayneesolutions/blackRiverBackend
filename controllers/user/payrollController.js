@@ -3,6 +3,11 @@ import { Payroll } from "../../models/hr/payrollSchemaModel.js";
 import { Paystub } from "../../models/hr/paystubModel.js";
 import mongoose from "mongoose";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { resolveEmployeeHourlyRate, summarizeAttendance, attendanceRangeFor } from "../../utils/payrollRates.js";
+import {
+  normalizePayItems, missingMemoError, sumItems, hasItemizedLists, taxesAreApplied,
+  TAX_FIELDS, toPaystubAdditions, toPaystubDeductions,
+} from "../../utils/payrollItems.js";
 
 export const createPayroll = async (req, res) => {
   try {
@@ -12,6 +17,8 @@ export const createPayroll = async (req, res) => {
       layoverHours = 0, layoverRate = 0, layoverAmount = 0,
       safetyBonus = 0,
       country = 'USA',
+    } = req.body;
+    let {
       // Canada taxes
       federalIncomeTaxCA = 0, provincialIncomeTaxCA = 0, cpp = 0, ei = 0, provincialHealthTaxCA = 0,
       // USA taxes
@@ -84,10 +91,27 @@ export const createPayroll = async (req, res) => {
       });
     }
 
+    // Itemised additions / deductions (each with a memo). Older callers send totals only.
+    const itemized = hasItemizedLists(req.body);
+    const additionItems = normalizePayItems(req.body.additionItems);
+    const deductionItems = normalizePayItems(req.body.deductionItems);
+    const memoError = missingMemoError(additionItems, deductionItems);
+    if (memoError) {
+      return res.status(400).json({ success: false, message: memoError });
+    }
+
+    // Tax is optional: unticked "Deduct taxes" means no tax at all
+    const applyTaxes = taxesAreApplied(req.body);
+    if (!applyTaxes) {
+      TAX_FIELDS.forEach((k) => { req.body[k] = 0; });
+      federalIncomeTaxCA = provincialIncomeTaxCA = cpp = ei = provincialHealthTaxCA = 0;
+      federalIncomeTaxUS = stateIncomeTaxUS = socialSecurityTax = medicareTax = stateDisabilityInsurance = localTax = 0;
+    }
+
     // ensure numeric values
     const base = Number(baseSalary);
-    const extra = Number(bonus);
-    const deduct = Number(deductions);
+    const extra = itemized ? Number(bonus || 0) + sumItems(additionItems) : Number(bonus);
+    const deduct = itemized ? sumItems(deductionItems) : Number(deductions);
 
     if (isNaN(base) || isNaN(extra) || isNaN(deduct)) {
       return res.status(400).json({
@@ -114,6 +138,28 @@ export const createPayroll = async (req, res) => {
       console.log(`⚠️ No tripIds provided or tripIds is not an array:`, tripIds);
     }
     
+    // Driver payroll sends the delivered ORDERS it pays for. The page historically sent them
+    // as `tripIds`, which were then looked up in the Trip collection, found nothing, and the
+    // pay statement had no trip lines. Resolve them as orders here.
+    const OrderModel = (await import("../../models/orderModel.js")).default;
+    const tripLines = Array.isArray(req.body.tripLines) ? req.body.tripLines : [];
+    let orderIdsForPayroll = [];
+    {
+      const candidateIds = [
+        ...(Array.isArray(req.body.orderIds) ? req.body.orderIds : []),
+        ...tripLines.map(l => l.orderId || l._id),
+        ...tripsArray.map(id => id.toString()),
+      ].filter(id => id && mongoose.Types.ObjectId.isValid(id));
+      if (candidateIds.length > 0) {
+        const found = await OrderModel.find({ _id: { $in: candidateIds } }).select('_id').lean();
+        orderIdsForPayroll = found.map(o => o._id);
+        if (orderIdsForPayroll.length > 0) {
+          const orderIdSet = new Set(orderIdsForPayroll.map(String));
+          tripsArray = tripsArray.filter(id => !orderIdSet.has(id.toString())); // keep only real trips
+        }
+      }
+    }
+
     // Legacy support: Convert loadIds to ObjectIds if provided (for backward compatibility)
     let loadsArray = [];
     if (loadIds && Array.isArray(loadIds) && loadIds.length > 0) {
@@ -140,60 +186,29 @@ export const createPayroll = async (req, res) => {
     // Recalculate total salary including taxes
     const finalTotalSalary = base + extra - deduct - totalTaxes;
 
-    // Calculate hours from attendance records
+    // Hours from attendance (manual days and login/logout days). A present day with no
+    // tracked hours counts as 8h. Rate: Pay Rate (per hour) from the employee profile.
     let totalHours = 0;
     let regularHours = 0;
     let overtimeHours = 0;
     let presentDays = 0;
     let absentDays = 0;
     let leaveDays = 0;
-    const hourlyRate = user.details?.hourlyRate || 0;
+    const hourlyRate = resolveEmployeeHourlyRate(user);
 
-    try {
-      const Attendance = (await import("../../models/hr/attendanceModel.js")).Attendance;
-      const startDateObj = startDate ? new Date(startDate) : new Date();
-      const endDateObj = endDate ? new Date(endDate) : new Date();
-      startDateObj.setHours(0, 0, 0, 0);
-      endDateObj.setHours(23, 59, 59, 999);
-
-      const attendanceFilter = {
-        company: companyId,
-        employee: userId,
-        date: { $gte: startDateObj, $lte: endDateObj }
-      };
-
-      const attendanceRecords = await Attendance.find(attendanceFilter).lean();
-
-      // Calculate hours and days from attendance
-      attendanceRecords.forEach(record => {
-        const hours = Math.min(record.totalHours || 0, 24); // one attendance day is never more than 24h
-        
-        if (record.status === 'present' || record.status === 'late') {
-          // Treat late as present
-          presentDays++;
-          totalHours += hours;
-          
-          // Calculate regular vs overtime hours (assuming 8 hours per day is regular)
-          if (hourlyRate > 0) {
-            const regularHoursForDay = Math.min(hours, 8);
-            const overtimeHoursForDay = Math.max(0, hours - 8);
-            regularHours += regularHoursForDay;
-            overtimeHours += overtimeHoursForDay;
-          } else {
-            // For salaried employees, all hours are regular
-            regularHours += hours;
-          }
-        } else if (record.status === 'absent') {
-          absentDays++;
-        } else if (record.status === 'leave') {
-          leaveDays++;
-        }
-      });
-
-      console.log(`✅ Calculated hours from attendance: totalHours=${totalHours}, regularHours=${regularHours}, overtimeHours=${overtimeHours}, presentDays=${presentDays}`);
-    } catch (attendanceError) {
-      console.error('⚠️ Error fetching attendance records for hours calculation:', attendanceError);
-      // Continue without hours if attendance fetch fails
+    if (user.role !== 'driver') {
+      try {
+        const Attendance = (await import("../../models/hr/attendanceModel.js")).Attendance;
+        const attendanceRecords = await Attendance.find({
+          ...(companyId ? { company: companyId } : {}),
+          employee: userId,
+          date: attendanceRangeFor(startDate || new Date(), endDate || new Date())
+        }).lean();
+        ({ totalHours, regularHours, overtimeHours, presentDays, absentDays, leaveDays } =
+          summarizeAttendance(attendanceRecords, hourlyRate));
+      } catch (attendanceError) {
+        console.error('⚠️ Error fetching attendance records for hours calculation:', attendanceError);
+      }
     }
 
     // create payroll
@@ -208,6 +223,7 @@ export const createPayroll = async (req, res) => {
       endDate: endDate || new Date(),
       loads: loadsArray, // Legacy support
       trips: tripsArray, // New: trips for drivers
+      orders: orderIdsForPayroll, // Delivered orders paid in this payroll (stops double pay)
       totalMiles: totalMiles ? Number(totalMiles) : 0,
       ratePerMile: ratePerMile ? parseFloat(Number(ratePerMile).toFixed(2)) : 0,
       // Layover fields
@@ -240,6 +256,12 @@ export const createPayroll = async (req, res) => {
       presentDays: presentDays,
       absentDays: absentDays,
       leaveDays: leaveDays,
+      additionItems,
+      deductionItems,
+      applyTaxes,
+      paymentStatus: req.body.paymentStatus === 'paid' ? 'paid' : 'pending',
+      paidAt: req.body.paymentStatus === 'paid' ? new Date() : undefined,
+      chequeNumber: req.body.chequeNumber || undefined,
       company: isSuperadmin ? req.body.company || null : companyId
     });
 
@@ -257,8 +279,42 @@ export const createPayroll = async (req, res) => {
       const CompanySettings = (await import("../../models/driver/companysettingsModel.js")).CompanySettings;
       const companyDetails = companyId ? await CompanySettings.findById(companyId) : null;
       
-      // Fetch trip details if trips exist (same approach as AI creation)
+      // Trip lines for the pay statement (Truck #, Load #, Type, Period, From, To, Rate, Miles, Amount)
       let tripDetailsArray = [];
+      if (orderIdsForPayroll.length > 0) {
+        try {
+          const orders = await OrderModel.find({ _id: { $in: orderIdsForPayroll } })
+            .populate('truck', 'internalId unitNumber plateNumber')
+            .select('orderNumber customerOrderNo truck coDriver empty teamLoad pickupDate deliveryDate pickupLocation deliveryLocation distance')
+            .lean();
+          const lineByOrder = new Map(tripLines.map(l => [String(l.orderId || l._id), l]));
+          const defaultRate = ratePerMile ? Number(ratePerMile) : 0;
+          for (const o of orders.sort((a, b) => new Date(a.pickupDate || a.deliveryDate || 0) - new Date(b.pickupDate || b.deliveryDate || 0))) {
+            const line = lineByOrder.get(String(o._id)) || {};
+            const miles = Number(line.miles) || Math.round((Number(o.distance) || 0) * 0.621371 * 100) / 100;
+            const rate = Number(line.rate) || defaultRate;
+            const amount = line.amount !== undefined ? Math.round(Number(line.amount) * 100) / 100 : Math.round(miles * rate * 100) / 100;
+            const team = !!(o.coDriver || o.teamLoad);
+            tripDetailsArray.push({
+              truckNumber: o.truck?.internalId || o.truck?.unitNumber || o.truck?.plateNumber || 'N/A',
+              payType: line.payType || 'Paid Per Mile',
+              loadNumber: o.empty ? '' : (o.orderNumber || o.customerOrderNo || ''),
+              tripType: o.empty ? (team ? 'EMPTY-T' : 'EMPTY') : (team ? 'TEAM' : 'SOLO'),
+              periodFrom: o.pickupDate || o.deliveryDate,
+              periodTo: o.deliveryDate || o.pickupDate,
+              origin: o.pickupLocation?.place || 'N/A',
+              destination: o.deliveryLocation?.place || 'N/A',
+              payRate: rate,
+              miles,
+              hours: 0,
+              amountCAD: amount,
+              amountUSD: 0
+            });
+          }
+        } catch (orderLineError) {
+          console.error('⚠️ Error building order lines for paystub:', orderLineError);
+        }
+      }
       if (tripsArray.length > 0) {
         try {
           const Trip = (await import("../../models/tripModel.js")).default;
@@ -374,9 +430,9 @@ export const createPayroll = async (req, res) => {
         }
       }
       
-      // Fetch additions if provided in request body
-      let additionsArray = [];
-      if (req.body.additions && Array.isArray(req.body.additions)) {
+      // Additions with memo: itemised lines first, legacy `additions` array otherwise
+      let additionsArray = itemized ? toPaystubAdditions(additionItems) : [];
+      if (!itemized && req.body.additions && Array.isArray(req.body.additions)) {
         additionsArray = req.body.additions.map(add => ({
           loadDate: add.loadDate ? new Date(add.loadDate) : new Date(),
           memo: add.memo || add.description || '',
@@ -399,9 +455,12 @@ export const createPayroll = async (req, res) => {
       const netPay = finalTotalSalary;
 
       // Count trips and loads
-      const tripsCount = tripsArray.length;
+      const tripsCount = tripsArray.length + orderIdsForPayroll.length;
       const loadsCount = loadsArray.length;
-      const mileageEarnings = totalMiles && ratePerMile ? (Number(totalMiles) * Number(ratePerMile)) : 0;
+      // When the payroll pays orders/trips, baseSalary already IS the trip pay; adding
+      // miles x rate on top doubled the gross pay on the statement.
+      const tripPayIsBase = orderIdsForPayroll.length > 0 || tripsArray.length > 0;
+      const mileageEarnings = !tripPayIsBase && totalMiles && ratePerMile ? (Number(totalMiles) * Number(ratePerMile)) : 0;
       
       // Determine work type based on role and companyFlag
       // For drivers: check companyFlag to distinguish between Company Driver and Owner-Operator
@@ -418,20 +477,23 @@ export const createPayroll = async (req, res) => {
       
       // Build earnings breakdown
       const earningsBreakdown = [];
+      const isHourlyEmployee = workType === 'Employee' && hourlyRate > 0 && totalHours > 0;
       if (base > 0) {
         earningsBreakdown.push({
-          type: 'Basic Pay',
-          units: workType === 'Driver' ? 'Trips' : 'Salary',
-          rate: workType === 'Driver' ? 0 : base,
+          type: isHourlyEmployee ? 'Regular Pay' : (tripPayIsBase ? 'Trip Pay' : 'Basic Pay'),
+          units: isHourlyEmployee ? `${totalHours.toFixed(2)} Hours`
+            : (tripPayIsBase ? `${Number(totalMiles || 0).toFixed(2)} Miles` : (workType === 'Employee' ? 'Salary' : 'Trips')),
+          rate: isHourlyEmployee ? hourlyRate : (tripPayIsBase ? Number(ratePerMile || 0) : (workType === 'Employee' ? base : 0)),
           amount: base
         });
       }
-      if (extra > 0) {
+      const pureBonus = itemized ? Number(bonus || 0) : extra;
+      if (pureBonus > 0) {
         earningsBreakdown.push({
           type: 'Bonus',
           units: '',
           rate: 0,
-          amount: extra
+          amount: pureBonus
         });
       }
       if (mileageEarnings > 0) {
@@ -445,7 +507,9 @@ export const createPayroll = async (req, res) => {
       
       // Build deductions breakdown
       const deductionsBreakdown = [];
-      if (deduct > 0) {
+      if (itemized) {
+        deductionItems.forEach((d) => deductionsBreakdown.push({ type: d.memo, amount: d.amount }));
+      } else if (deduct > 0) {
         deductionsBreakdown.push({
           type: 'Other Deductions',
           amount: deduct
@@ -511,8 +575,8 @@ export const createPayroll = async (req, res) => {
           tripPay: mileageEarnings, // Same as mileage for drivers
           allowance: 0,
           incentives: 0,
-          regularHours: 0,
-          hourlyRate: 0,
+          regularHours: regularHours,
+          hourlyRate: hourlyRate,
           totalEarnings: grossPay + mileageEarnings,
           earningsBreakdown: earningsBreakdown
         },
@@ -581,6 +645,10 @@ export const createPayroll = async (req, res) => {
         },
         tripDetails: tripDetailsArray,
         additions: additionsArray,
+        deductionItems: toPaystubDeductions(deductionItems),
+        hoursWorked: { totalHours, regularHours, overtimeHours, hourlyRate, presentDays },
+        billNumber: req.body.billNumber || '',
+        chequeNumber: req.body.chequeNumber || '',
         employerContributions: {
           companyInsurance: 0,
           pensionPF: 0,
@@ -1118,10 +1186,29 @@ export const updatePayroll = async (req, res) => {
       }
     }
 
+    // Itemised additions / deductions with memos (new frontend); totals only for older callers
+    const itemized = hasItemizedLists(req.body);
+    if (itemized) {
+      const additionItems = normalizePayItems(req.body.additionItems);
+      const deductionItems = normalizePayItems(req.body.deductionItems);
+      const memoError = missingMemoError(additionItems, deductionItems);
+      if (memoError) {
+        return res.status(400).json({ success: false, message: memoError });
+      }
+      payroll.additionItems = additionItems;
+      payroll.deductionItems = deductionItems;
+    }
+
     // Update fields if provided
     if (baseSalary !== undefined) payroll.baseSalary = Number(baseSalary);
-    if (bonus !== undefined) payroll.bonus = Number(bonus);
-    if (deductions !== undefined) payroll.deductions = Number(deductions);
+    if (itemized) {
+      payroll.bonus = Number(bonus || 0) + sumItems(payroll.additionItems);
+      payroll.deductions = sumItems(payroll.deductionItems);
+    } else {
+      if (bonus !== undefined) payroll.bonus = Number(bonus);
+      if (deductions !== undefined) payroll.deductions = Number(deductions);
+    }
+    if (req.body.chequeNumber !== undefined) payroll.chequeNumber = req.body.chequeNumber;
     
     // Track if dates changed to recalculate hours
     const datesChanged = (startDate && new Date(startDate).getTime() !== payroll.startDate.getTime()) ||
@@ -1138,53 +1225,16 @@ export const updatePayroll = async (req, res) => {
         const User = (await import("../../models/driver/userModel.js")).User;
         const user = await User.findById(payroll.userId);
         
-        const startDateObj = payroll.startDate;
-        const endDateObj = payroll.endDate;
-        startDateObj.setHours(0, 0, 0, 0);
-        endDateObj.setHours(23, 59, 59, 999);
-
         const attendanceFilter = {
-          company: companyId,
+          ...(companyId ? { company: companyId } : {}),
           employee: payroll.userId,
-          date: { $gte: startDateObj, $lte: endDateObj }
+          date: attendanceRangeFor(payroll.startDate, payroll.endDate)
         };
 
         const attendanceRecords = await Attendance.find(attendanceFilter).lean();
-
-        // Reset hours
-        let totalHours = 0;
-        let regularHours = 0;
-        let overtimeHours = 0;
-        let presentDays = 0;
-        let absentDays = 0;
-        let leaveDays = 0;
-        const hourlyRate = user?.details?.hourlyRate || 0;
-
-        // Calculate hours and days from attendance
-        attendanceRecords.forEach(record => {
-          const hours = Math.min(record.totalHours || 0, 24); // one attendance day is never more than 24h
-          
-          if (record.status === 'present' || record.status === 'late') {
-            // Treat late as present
-            presentDays++;
-            totalHours += hours;
-            
-            // Calculate regular vs overtime hours (assuming 8 hours per day is regular)
-            if (hourlyRate > 0) {
-              const regularHoursForDay = Math.min(hours, 8);
-              const overtimeHoursForDay = Math.max(0, hours - 8);
-              regularHours += regularHoursForDay;
-              overtimeHours += overtimeHoursForDay;
-            } else {
-              // For salaried employees, all hours are regular
-              regularHours += hours;
-            }
-          } else if (record.status === 'absent') {
-            absentDays++;
-          } else if (record.status === 'leave') {
-            leaveDays++;
-          }
-        });
+        const hourlyRate = resolveEmployeeHourlyRate(user);
+        const { totalHours, regularHours, overtimeHours, presentDays, absentDays, leaveDays } =
+          summarizeAttendance(attendanceRecords, hourlyRate);
 
         // Update hours fields
         payroll.totalHours = Math.round(totalHours * 100) / 100;
@@ -1202,19 +1252,26 @@ export const updatePayroll = async (req, res) => {
       }
     }
 
+    // Tax is optional: unticked "Deduct taxes" clears every tax line
+    const applyTaxes = taxesAreApplied(req.body);
+    if (req.body.applyTaxes !== undefined) payroll.applyTaxes = applyTaxes;
+    if (!applyTaxes) {
+      TAX_FIELDS.forEach((k) => { payroll[k] = 0; });
+    }
+
     // Update tax fields if provided
     if (country !== undefined) payroll.country = country;
-    if (federalIncomeTaxCA !== undefined) payroll.federalIncomeTaxCA = Number(federalIncomeTaxCA);
-    if (provincialIncomeTaxCA !== undefined) payroll.provincialIncomeTaxCA = Number(provincialIncomeTaxCA);
-    if (cpp !== undefined) payroll.cpp = Number(cpp);
-    if (ei !== undefined) payroll.ei = Number(ei);
-    if (provincialHealthTaxCA !== undefined) payroll.provincialHealthTaxCA = Number(provincialHealthTaxCA);
-    if (federalIncomeTaxUS !== undefined) payroll.federalIncomeTaxUS = Number(federalIncomeTaxUS);
-    if (stateIncomeTaxUS !== undefined) payroll.stateIncomeTaxUS = Number(stateIncomeTaxUS);
-    if (socialSecurityTax !== undefined) payroll.socialSecurityTax = Number(socialSecurityTax);
-    if (medicareTax !== undefined) payroll.medicareTax = Number(medicareTax);
-    if (stateDisabilityInsurance !== undefined) payroll.stateDisabilityInsurance = Number(stateDisabilityInsurance);
-    if (localTax !== undefined) payroll.localTax = Number(localTax);
+    if (applyTaxes && federalIncomeTaxCA !== undefined) payroll.federalIncomeTaxCA = Number(federalIncomeTaxCA);
+    if (applyTaxes && provincialIncomeTaxCA !== undefined) payroll.provincialIncomeTaxCA = Number(provincialIncomeTaxCA);
+    if (applyTaxes && cpp !== undefined) payroll.cpp = Number(cpp);
+    if (applyTaxes && ei !== undefined) payroll.ei = Number(ei);
+    if (applyTaxes && provincialHealthTaxCA !== undefined) payroll.provincialHealthTaxCA = Number(provincialHealthTaxCA);
+    if (applyTaxes && federalIncomeTaxUS !== undefined) payroll.federalIncomeTaxUS = Number(federalIncomeTaxUS);
+    if (applyTaxes && stateIncomeTaxUS !== undefined) payroll.stateIncomeTaxUS = Number(stateIncomeTaxUS);
+    if (applyTaxes && socialSecurityTax !== undefined) payroll.socialSecurityTax = Number(socialSecurityTax);
+    if (applyTaxes && medicareTax !== undefined) payroll.medicareTax = Number(medicareTax);
+    if (applyTaxes && stateDisabilityInsurance !== undefined) payroll.stateDisabilityInsurance = Number(stateDisabilityInsurance);
+    if (applyTaxes && localTax !== undefined) payroll.localTax = Number(localTax);
     // Layover fields
     if (layoverHours !== undefined) payroll.layoverHours = Number(layoverHours) || 0;
     if (layoverRate !== undefined) payroll.layoverRate = Number(layoverRate) || 0;
@@ -1262,6 +1319,19 @@ export const updatePayroll = async (req, res) => {
         paystub.earnings.hourlyRate = payroll.hourlyRate || 0;
         paystub.deductions.totalDeductions = payroll.deductions;
         paystub.deductions.otherDeductions = payroll.deductions;
+        if (itemized) {
+          paystub.additions = toPaystubAdditions(payroll.additionItems || []);
+          paystub.deductionItems = toPaystubDeductions(payroll.deductionItems || []);
+          paystub.deductions.deductionsBreakdown = (payroll.deductionItems || []).map(d => ({ type: d.memo, amount: d.amount }));
+        }
+        paystub.hoursWorked = {
+          totalHours: payroll.totalHours || 0,
+          regularHours: payroll.regularHours || 0,
+          overtimeHours: payroll.overtimeHours || 0,
+          hourlyRate: payroll.hourlyRate || 0,
+          presentDays: payroll.presentDays || 0
+        };
+        if (req.body.chequeNumber !== undefined) paystub.chequeNumber = req.body.chequeNumber;
 
         // Update taxes based on country
         if (payroll.country === 'Canada') {
@@ -1311,6 +1381,37 @@ export const updatePayroll = async (req, res) => {
   }
 };
 
+
+// ✅ Mark a payroll paid / pending (Accounts dashboard counts paid vs pending payrolls)
+export const updatePayrollPaymentStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentStatus, paymentMethod, chequeNumber, paidAt } = req.body;
+    if (!['paid', 'pending'].includes(paymentStatus)) {
+      return res.status(400).json({ success: false, message: "paymentStatus must be 'paid' or 'pending'" });
+    }
+    const companyId = getUserCompanyId(req.user);
+    const isSuperadmin = req.user?.role === 'superadmin';
+    const query = { _id: id };
+    if (!isSuperadmin) query.company = companyId;
+    const payroll = await Payroll.findOne(query);
+    if (!payroll) return res.status(404).json({ success: false, message: "Payroll not found" });
+
+    payroll.paymentStatus = paymentStatus;
+    payroll.paidAt = paymentStatus === 'paid' ? (paidAt ? new Date(paidAt) : new Date()) : undefined;
+    if (paymentMethod !== undefined) payroll.paymentMethod = paymentMethod;
+    if (chequeNumber !== undefined) payroll.chequeNumber = chequeNumber;
+    await payroll.save();
+
+    if (chequeNumber !== undefined) {
+      await Paystub.updateOne({ payrollId: payroll._id }, { $set: { chequeNumber } });
+    }
+    res.json({ success: true, message: paymentStatus === 'paid' ? 'Payroll marked as paid' : 'Payroll marked as pending', data: payroll });
+  } catch (err) {
+    console.error("Error updating payroll payment status:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
 
 // ✅ Delete Payroll
 export const deletePayroll = async (req, res) => {

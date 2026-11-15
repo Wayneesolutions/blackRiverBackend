@@ -3230,7 +3230,10 @@ export const getCompletedTripsByDriver = async (req, res) => {
       }
 
       if (dateConditions.length > 0) {
-        matchQuery.$or = dateConditions;
+        // Was `matchQuery.$or = dateConditions`, which replaced the driver filter and
+        // returned every driver's trips in the period. Keep both conditions.
+        matchQuery.$and = [{ $or: matchQuery.$or }, { $or: dateConditions }];
+        delete matchQuery.$or;
       }
     }
 

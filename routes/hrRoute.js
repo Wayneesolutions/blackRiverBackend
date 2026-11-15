@@ -30,9 +30,15 @@ import {
   deleteFinancialNote
 } from '../controllers/user/financialNoteController.js';
 
+import {
+  listBills, getBillStats, createBill, updateBill, recordBillPayment, deleteBillPayment,
+  deleteBill, getBillAttachmentUrl, listCarriers, createCarrier
+} from '../controllers/hr/billController.js';
+
 // Fleet Maintenance Finance controllers
 import {
   getMaintenanceExpenseSummary,
+  setUnitPurchasePrice,
   getPartsCostLog,
   createPartsCostLog,
   updatePartsCostLog,
@@ -97,7 +103,8 @@ import {
   getPayrolls,
   updatePayroll,
   deletePayroll,
-  deleteAllPayrolls
+  deleteAllPayrolls,
+  updatePayrollPaymentStatus
 } from '../controllers/user/payrollController.js';
 
 // Paystub controllers
@@ -219,7 +226,8 @@ import {
   getMilesTrackingById,
   updateMilesTracking,
   deleteMilesTracking,
-  getMilesTrackingStats
+  getMilesTrackingStats,
+  getTruckWork,
 } from '../controllers/hr/settlementController.js';
 
 // Tax Setup controllers
@@ -440,6 +448,12 @@ hrRoute.get(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'hr', 'Compliance Manager', 'Fleet Maintenance Manager', 'accounts', 'accountant'),
   getMaintenanceExpenseSummary
+);
+hrRoute.patch(
+  '/fleet-maintenance/unit-purchase-price',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'Fleet Maintenance Manager', 'accountant'),
+  setUnitPurchasePrice
 );
 
 // Parts Cost Log
@@ -721,6 +735,12 @@ hrRoute.put(
   authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   updatePayroll
 );
+hrRoute.patch(
+  '/payroll/:id/payment-status',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  updatePayrollPaymentStatus
+);
 hrRoute.delete(
   '/delete-payroll/:id',
   authMiddleware,
@@ -930,6 +950,13 @@ hrRoute.get(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   getSettlementStats
+);
+// Owner-operator settlement: all loads a truck ran in the period
+hrRoute.get(
+  '/settlement/truck-work',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  getTruckWork
 );
 hrRoute.get(
   '/settlement',
@@ -1958,18 +1985,34 @@ hrRoute.post(
   bulkAnalyzeAIDriverPayrolls
 );
 
+
+// ==================== ACCOUNTS PAYABLE ====================
+const AP_ROLES = ['admin', 'superadmin', 'hr', 'accountant'];
+hrRoute.get('/bills', authMiddleware, authorizeRoles(...AP_ROLES), listBills);
+hrRoute.get('/bills/stats', authMiddleware, authorizeRoles(...AP_ROLES), getBillStats);
+hrRoute.post('/bills', authMiddleware, authorizeRoles(...AP_ROLES), FileUpload.single('attachment'), logFileUpload, createBill);
+hrRoute.put('/bills/:id', authMiddleware, authorizeRoles(...AP_ROLES), FileUpload.single('attachment'), logFileUpload, updateBill);
+hrRoute.delete('/bills/:id', authMiddleware, authorizeRoles(...AP_ROLES), deleteBill);
+hrRoute.post('/bills/:id/payments', authMiddleware, authorizeRoles(...AP_ROLES), recordBillPayment);
+hrRoute.delete('/bills/:id/payments/:paymentId', authMiddleware, authorizeRoles(...AP_ROLES), deleteBillPayment);
+hrRoute.get('/bills/:id/attachment-url', authMiddleware, authorizeRoles(...AP_ROLES), getBillAttachmentUrl);
+
+// Carriers we sell (broker) loads to - used by the New Order form
+hrRoute.get('/carriers', authMiddleware, authorizeRoles(...AP_ROLES, 'dispatcher'), listCarriers);
+hrRoute.post('/carriers', authMiddleware, authorizeRoles(...AP_ROLES, 'dispatcher'), createCarrier);
+
 // ==================== ATTENDANCE ROUTES ====================
 hrRoute.get(
   '/attendance',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   listAttendance
 );
 
 hrRoute.post(
   '/attendance',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'hr'),
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   upsertAttendance
 );
 

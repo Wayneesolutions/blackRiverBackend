@@ -158,6 +158,26 @@ const paystubSchema = new mongoose.Schema({
     totalCAD: { type: Number } // Total amount in CAD
   }],
   
+  // Deductions with their memo (insurance, registration, advance...) shown line by line
+  deductionItems: [{
+    loadDate: { type: Date },
+    memo: { type: String },
+    amount: { type: Number },
+    per: { type: String },
+    gst: { type: Number, default: 0 },
+    totalCAD: { type: Number }
+  }],
+  // Hours worked from attendance (employee pay statements)
+  hoursWorked: {
+    totalHours: { type: Number, default: 0 },
+    regularHours: { type: Number, default: 0 },
+    overtimeHours: { type: Number, default: 0 },
+    hourlyRate: { type: Number, default: 0 },
+    presentDays: { type: Number, default: 0 }
+  },
+  billNumber: { type: String },
+  chequeNumber: { type: String },
+
   // Employer Contributions (optional)
   employerContributions: {
     companyInsurance: { type: Number, default: 0 },

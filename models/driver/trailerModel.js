@@ -4,6 +4,8 @@ const trailerSchema = new mongoose.Schema(
   {
     // Basic Information (from frontend form)
     unitNumber: { type: String }, // Also used as internalId
+    purchasePrice: { type: Number }, // What the unit was bought for (fleet spend report)
+    purchaseDate: { type: Date },
     trailer: { type: String }, // Trailer number/identifier
     vinNumber: { type: String, sparse: true },
     plateNumber: { type: String, required: true },

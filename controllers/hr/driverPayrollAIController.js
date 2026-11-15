@@ -7,6 +7,7 @@ import { analyzeDriverPayrollWithTrips } from "../../services/openaiService.js";
 import Order from "../../models/orderModel.js";
 import { haversineDistance } from "../../utils/distance.js";
 import { getRouteDistance, getCoordinatesFromAddress } from "../../services/googlemap.js";
+import { PAYROLL_ORDER_STATUSES } from "../../utils/payrollItems.js";
 
 /**
  * Generate AI-powered payroll recommendations for a driver based on trips
@@ -66,7 +67,9 @@ export const generateAIDriverPayroll = async (req, res) => {
           ]
         },
         {
-          status: 'COMPLETED' // Order status is 'COMPLETED' (uppercase)
+          // Was 'COMPLETED' (uppercase), which never matches the lowercase enum, so AI
+          // payroll always found 0 trips. Delivered loads are payable too.
+          status: { $in: PAYROLL_ORDER_STATUSES }
         },
         {
           $or: [
@@ -488,7 +491,10 @@ export const generateAIDriverPayroll = async (req, res) => {
     let ei = 0;
     let provincialHealthTaxCA = 0;
 
-    if (country === 'Canada') {
+    const estimateTaxes = req.body.applyTaxes === true || req.body.applyTaxes === 'true';
+    if (!estimateTaxes) {
+      // Tax is optional (client): no tax unless "Deduct taxes" is ticked
+    } else if (country === 'Canada') {
       if (grossSalary > 0) {
         federalIncomeTaxCA = Math.round(grossSalary * 0.15 * 100) / 100;
         provincialIncomeTaxCA = Math.round(grossSalary * 0.10 * 100) / 100;
@@ -590,7 +596,7 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
     // Find all drivers who have completed orders in the date range
     // Use flexible date filtering like getCompletedOrdersByDriver (check both deliveryDate and updatedAt)
     const ordersQuery = {
-      status: 'completed',
+      status: { $in: PAYROLL_ORDER_STATUSES },
       $or: [
         { deliveryDate: { $gte: startDateObj, $lte: endDateObj } },
         { updatedAt: { $gte: startDateObj, $lte: endDateObj } }
@@ -643,7 +649,7 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
 
     // Debug: Check total completed orders
     const totalCompletedOrders = await Order.countDocuments({
-      status: 'completed',
+      status: { $in: PAYROLL_ORDER_STATUSES },
       ...(ordersQuery.company ? { company: ordersQuery.company } : {})
     });
     console.log(`📊 Total completed orders in database (all dates): ${totalCompletedOrders}`);
@@ -651,12 +657,12 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
     if (!driversWithOrders || driversWithOrders.length === 0) {
       // Try to provide more helpful error message
       const anyCompletedOrders = await Order.countDocuments({
-        status: 'completed',
+        status: { $in: PAYROLL_ORDER_STATUSES },
         ...(ordersQuery.company ? { company: ordersQuery.company } : {})
       });
       
       const ordersInDateRange = await Order.countDocuments({
-        status: 'completed',
+        status: { $in: PAYROLL_ORDER_STATUSES },
         deliveryDate: { $gte: startDateObj, $lte: endDateObj },
         ...(ordersQuery.company ? { company: ordersQuery.company } : {})
       });
@@ -863,7 +869,7 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
             { driver: driverObjectId },
             { coDriver: driverObjectId }
           ],
-          status: 'completed'
+          status: { $in: PAYROLL_ORDER_STATUSES }
         };
 
         // Add date filtering
@@ -1326,7 +1332,10 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
         let ei = 0;
         let provincialHealthTaxCA = 0;
 
-        if (country === 'Canada') {
+        const estimateTaxes = req.body.applyTaxes === true || req.body.applyTaxes === 'true';
+        if (!estimateTaxes) {
+          // Tax is optional (client): no tax unless "Deduct taxes" is ticked
+        } else if (country === 'Canada') {
           // Canada tax calculations (simplified)
           if (grossSalary > 0) {
             federalIncomeTaxCA = Math.round(grossSalary * 0.15 * 100) / 100; // Simplified 15%
@@ -1608,6 +1617,15 @@ export const bulkCreateDriverPayrolls = async (req, res) => {
           startDate: startDateObj,
           endDate: endDateObj,
           trips: Array.isArray(tripIds) ? tripIds.map(id => new mongoose.Types.ObjectId(id)) : [],
+          // tripIds here are delivered ORDER ids: keep them so the same load is not paid twice
+          orders: Array.isArray(tripIds) ? tripIds.filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id)) : [],
+          additionItems: (Array.isArray(additions) ? additions : [])
+            .map(a => ({ memo: a.memo || a.name || a.description || 'Addition', amount: parseFloat(a.calculatedAmount || a.amount || 0), source: 'profile' }))
+            .filter(a => a.amount > 0),
+          deductionItems: (Array.isArray(deductionsDetails) ? deductionsDetails : [])
+            .map(d => ({ memo: d.memo || d.name || d.description || 'Deduction', amount: parseFloat(d.calculatedAmount || d.amount || 0), source: 'profile' }))
+            .filter(d => d.amount > 0),
+          applyTaxes: totalTaxes > 0,
           totalMiles: parseFloat(payrollData.totalMiles || 0),
           ratePerMile: parseFloat(Number(payrollData.ratePerMile || 0).toFixed(2)),
           // Tax fields
@@ -1769,7 +1787,9 @@ export const bulkCreateDriverPayrolls = async (req, res) => {
           
           // Build deductions breakdown
           const deductionsBreakdown = [];
-          if (deduct > 0) {
+          if ((payroll.deductionItems || []).length > 0) {
+            payroll.deductionItems.forEach(d => deductionsBreakdown.push({ type: d.memo, amount: d.amount }));
+          } else if (deduct > 0) {
             deductionsBreakdown.push({
               type: 'Other Deductions',
               amount: deduct
@@ -1905,6 +1925,7 @@ export const bulkCreateDriverPayrolls = async (req, res) => {
             },
             tripDetails: tripDetailsArray,
             additions: additionsArray,
+            deductionItems: (payroll.deductionItems || []).map(d => ({ memo: d.memo, amount: d.amount, per: 'One Time', gst: 0, totalCAD: d.amount })),
             employerContributions: {
               companyInsurance: 0,
               pensionPF: 0,
