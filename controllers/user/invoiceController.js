@@ -327,7 +327,7 @@ export const listInvoices = async (req, res) => {
     const query = await getCombinedFilter(req.user, companyFilter) || {};
 
     const invoices = await Invoice.find(query)
-      .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl')
+      .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl invoiceNotes')
       .populate({
         path: 'orderId',
         select: 'orderNumber customerOrderNo tripNo orderDate pickupLocation deliveryLocation pickupDate pickupTime deliveryDate deliveryTime pickupRefNo deliveryRefNo dropOffNumber commodity noOfPackages noOfPackagesType weight weightUnit dimensions equipment shipper receiver stops receiverStops invoiceNotes invoiceInstructions sendToFactor customerAddress customerCity customerProvince customerPostalCode customerCountry customerPrimaryPhone customerContact payableEmail driver coDriver truck trailer',
@@ -387,7 +387,7 @@ export const getInvoiceById = async (req, res) => {
     }
 
     const invoice = await Invoice.findOne(query)
-      .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl')
+      .populate('company', 'companyName address contactEmail contactPhone taxNumber logoUrl invoiceNotes')
       .populate({
         path: 'orderId',
         select: 'orderNumber customerOrderNo tripNo orderDate pickupLocation deliveryLocation pickupDate pickupTime deliveryDate deliveryTime pickupRefNo deliveryRefNo dropOffNumber commodity noOfPackages noOfPackagesType weight weightUnit dimensions equipment shipper receiver stops receiverStops invoiceNotes invoiceInstructions sendToFactor customerAddress customerCity customerProvince customerPostalCode customerCountry customerPrimaryPhone customerContact payableEmail driver coDriver truck trailer',

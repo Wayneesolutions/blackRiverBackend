@@ -8,6 +8,9 @@ const companySettingsSchema = new mongoose.Schema({
   contactEmail: { type: String },
   contactPhone: { type: String },
   taxNumber: { type: String }, // GST/HST/Tax Number for invoices
+  // Printed in the Notes box of every customer invoice that has no notes of its own
+  // (e.g. the factoring company's Notice of Assignment)
+  invoiceNotes: { type: String, default: '' },
   
   // Samsara API Configuration
   samsaraConfig: {

@@ -196,7 +196,7 @@ import {
   deleteInvoice,
   getBillingReport
 } from '../controllers/user/invoiceController.js';
-import { listInvoiceDocuments, buildInvoicePacket } from '../controllers/user/invoicePacketController.js';
+import { listInvoiceDocuments, buildInvoicePacket, emailInvoicePacket, getInvoiceSettings, updateInvoiceSettings } from '../controllers/user/invoicePacketController.js';
 
 // Cash Flow Insights controller
 import { getCashFlowInsights } from '../controllers/hr/cashFlowController.js';
@@ -883,6 +883,25 @@ hrRoute.post(
   authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
   FileUploadMemory.single('invoicePdf'),
   buildInvoicePacket
+);
+hrRoute.post(
+  '/invoice/:id/email-packet',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  FileUploadMemory.single('invoicePdf'),
+  emailInvoicePacket
+);
+hrRoute.get(
+  '/invoice-settings',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  getInvoiceSettings
+);
+hrRoute.put(
+  '/invoice-settings',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'hr', 'accountant'),
+  updateInvoiceSettings
 );
 hrRoute.get(
   '/cash-flow-insights',

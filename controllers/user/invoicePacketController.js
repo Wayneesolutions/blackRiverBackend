@@ -87,6 +87,7 @@ export const collectTripDocuments = async (order) => {
 };
 
 const loadInvoiceAndOrder = async (req) => {
+  // Returns { invoice, order } or { error: [status, message] }
   const query = { _id: req.params.id };
   const companyId = getUserCompanyId(req.user);
   if (req.user?.role !== "superadmin" && companyId) query.company = companyId;
@@ -115,16 +116,9 @@ export const listInvoiceDocuments = async (req, res) => {
   }
 };
 
-// POST /hr/invoice/:id/packet (multipart: invoicePdf) -> one PDF: invoice + POD + manifest (+ BOL)
-export const buildInvoicePacket = async (req, res) => {
-  try {
-    if (!req.file?.buffer) {
-      return res.status(400).json({ success: false, message: "Invoice PDF missing" });
-    }
-    const { error, order } = await loadInvoiceAndOrder(req);
-    if (error) return res.status(error[0]).json({ success: false, message: error[1] });
-
-    const packet = await PDFDocument.load(req.file.buffer);
+/** Invoice PDF + the trip's documents -> { bytes, fileName, notes } */
+const assemblePacket = async (invoicePdf, order, invoiceId) => {
+    const packet = await PDFDocument.load(invoicePdf);
     const font = await packet.embedFont(StandardFonts.Helvetica);
     const bold = await packet.embedFont(StandardFonts.HelveticaBold);
     const skipped = [];
@@ -181,15 +175,100 @@ export const buildInvoicePacket = async (req, res) => {
     }
 
     const bytes = await packet.save();
-    const fileName = `Invoice_${order?.orderNumber || String(req.params.id).slice(-8)}_with_POD_Manifest.pdf`;
+    const fileName = `Invoice_${order?.orderNumber || String(invoiceId).slice(-8)}_with_POD_Manifest.pdf`;
+    return { bytes, fileName, docsCount: docs.length, notes: [...missing, ...skipped] };
+};
+
+// POST /hr/invoice/:id/packet (multipart: invoicePdf) -> one PDF: invoice + POD + manifest (+ BOL)
+export const buildInvoicePacket = async (req, res) => {
+  try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ success: false, message: "Invoice PDF missing" });
+    }
+    const { error, order } = await loadInvoiceAndOrder(req);
+    if (error) return res.status(error[0]).json({ success: false, message: error[1] });
+    const { bytes, fileName, docsCount, notes } = await assemblePacket(req.file.buffer, order, req.params.id);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-    res.setHeader("X-Packet-Documents", String(docs.length));
-    res.setHeader("X-Packet-Missing", encodeURIComponent([...missing, ...skipped].join(" | ")));
+    res.setHeader("X-Packet-Documents", String(docsCount));
+    res.setHeader("X-Packet-Missing", encodeURIComponent(notes.join(" | ")));
     res.setHeader("Access-Control-Expose-Headers", "X-Packet-Documents, X-Packet-Missing, Content-Disposition");
     res.send(Buffer.from(bytes));
   } catch (err) {
     console.error("Invoice packet error:", err);
     res.status(500).json({ success: false, message: err.message || "Could not build the invoice packet" });
+  }
+};
+
+// POST /hr/invoice/:id/email-packet (multipart: invoicePdf, optional "to")
+// Emails the invoice with the POD and border manifest attached (one PDF).
+export const emailInvoicePacket = async (req, res) => {
+  try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ success: false, message: "Invoice PDF missing" });
+    }
+    const { error, invoice, order } = await loadInvoiceAndOrder(req);
+    if (error) return res.status(error[0]).json({ success: false, message: error[1] });
+    const to = String(req.body?.to || invoice.clientEmail || "").trim();
+    if (!to) {
+      return res.status(400).json({ success: false, message: "This invoice has no customer email. Add one or enter an address." });
+    }
+    const { bytes, fileName, notes } = await assemblePacket(req.file.buffer, order, req.params.id);
+    const { sendInvoiceEmail } = await import("../../services/emailService.js");
+    const { CompanySettings } = await import("../../models/driver/companysettingsModel.js");
+    const companyData = invoice.company ? await CompanySettings.findById(invoice.company).lean() : null;
+    const result = await sendInvoiceEmail({
+      customerEmail: to,
+      customerName: invoice.clientName,
+      invoiceId: String(invoice._id),
+      invoiceNumber: order?.orderNumber || String(invoice._id).slice(-8).toUpperCase(),
+      amount: invoice.amount,
+      currency: invoice.currency,
+      dueDate: invoice.dueDate,
+      paymentTerms: invoice.paymentTerms,
+      invoiceUrl: invoice.invoiceUrl,
+      companyData,
+      pdfBase64: Buffer.from(bytes).toString("base64"),
+      pdfFileName: fileName,
+    });
+    if (!result?.success) {
+      return res.status(502).json({ success: false, message: result?.message || result?.error || "Email could not be sent" });
+    }
+    res.json({
+      success: true,
+      message: `Invoice with POD & Manifest emailed to ${to}`,
+      notes,
+    });
+  } catch (err) {
+    console.error("Email invoice packet error:", err);
+    res.status(500).json({ success: false, message: err.message || "Could not email the invoice" });
+  }
+};
+
+// GET / PUT /hr/invoice-settings — default notes printed on every invoice without its own notes
+// (e.g. the factoring company's Notice of Assignment)
+export const getInvoiceSettings = async (req, res) => {
+  try {
+    const { CompanySettings } = await import("../../models/driver/companysettingsModel.js");
+    const companyId = getUserCompanyId(req.user);
+    if (!companyId) return res.json({ success: true, data: { invoiceNotes: "" } });
+    const company = await CompanySettings.findById(companyId).select("invoiceNotes").lean();
+    res.json({ success: true, data: { invoiceNotes: company?.invoiceNotes || "" } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const updateInvoiceSettings = async (req, res) => {
+  try {
+    const { CompanySettings } = await import("../../models/driver/companysettingsModel.js");
+    const companyId = getUserCompanyId(req.user);
+    if (!companyId) return res.status(400).json({ success: false, message: "Please complete company settings first." });
+    const invoiceNotes = String(req.body?.invoiceNotes ?? "").slice(0, 2000);
+    const company = await CompanySettings.findByIdAndUpdate(companyId, { $set: { invoiceNotes } }, { new: true }).select("invoiceNotes").lean();
+    if (!company) return res.status(404).json({ success: false, message: "Company settings not found" });
+    res.json({ success: true, message: "Default invoice notes saved", data: { invoiceNotes: company.invoiceNotes } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 };
