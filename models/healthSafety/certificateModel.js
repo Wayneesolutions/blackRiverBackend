@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const certificateSchema = new mongoose.Schema({
   certificateNumber: { type: String, required: true, unique: true },
@@ -29,7 +30,7 @@ certificateSchema.pre('save', async function(next) {
   if (this.isNew && !this.certificateNumber) {
     const year = new Date().getFullYear();
     const CertificateModel = this.constructor;
-    const count = await CertificateModel.countDocuments({
+    const count = await highestSequence(CertificateModel, {
       certificateNumber: new RegExp(`^CERT-${year}-`)
     });
     this.certificateNumber = `CERT-${year}-${String(count + 1).padStart(4, '0')}`;

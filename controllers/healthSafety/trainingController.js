@@ -1,5 +1,6 @@
 import { Training } from "../../models/healthSafety/trainingModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // ✅ Create Training
 export const createTraining = async (req, res) => {
@@ -53,7 +54,7 @@ export const createTraining = async (req, res) => {
     const maxAttempts = 5;
     
     while (attempts < maxAttempts) {
-      const count = await Training.countDocuments({
+      const count = await highestSequence(Training, {
         trainingNumber: new RegExp(`^TRN-${year}-`)
       });
       trainingNumber = `TRN-${year}-${String(count + 1).padStart(4, '0')}`;

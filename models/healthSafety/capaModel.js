@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const capaSchema = new mongoose.Schema({
   capaNumber: { type: String }, // Auto-generated in pre-save hook, not required
@@ -49,7 +50,7 @@ capaSchema.pre('save', async function(next) {
       ...(companyId ? { company: companyId } : {})
     };
     
-    const count = await CapaModel.countDocuments(countQuery);
+    const count = await highestSequence(CapaModel, countQuery);
     this.capaNumber = `CAPA-${year}-${String(count + 1).padStart(4, '0')}`;
   }
 

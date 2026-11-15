@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const documentLibrarySchema = new mongoose.Schema({
   documentNumber: { type: String, unique: true, sparse: true },
@@ -62,7 +63,7 @@ documentLibrarySchema.pre('save', async function(next) {
     const year = new Date().getFullYear();
     const DocumentLibraryModel = this.constructor;
     const companyFilter = this.company ? { company: this.company } : {};
-    const count = await DocumentLibraryModel.countDocuments({
+    const count = await highestSequence(DocumentLibraryModel, {
       documentNumber: new RegExp(`^DOC-${year}-`),
       ...companyFilter
     });

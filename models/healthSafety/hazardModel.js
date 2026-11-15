@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const hazardSchema = new mongoose.Schema({
   hazardNumber: { type: String, required: true, unique: true },
@@ -34,7 +35,7 @@ hazardSchema.pre('save', async function(next) {
   if (this.isNew && !this.hazardNumber) {
     const year = new Date().getFullYear();
     const HazardModel = this.constructor;
-    const count = await HazardModel.countDocuments({
+    const count = await highestSequence(HazardModel, {
       hazardNumber: new RegExp(`^HAZ-${year}-`)
     });
     this.hazardNumber = `HAZ-${year}-${String(count + 1).padStart(4, '0')}`;

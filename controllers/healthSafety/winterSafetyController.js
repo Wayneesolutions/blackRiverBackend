@@ -1,6 +1,7 @@
 import { WinterSafety } from "../../models/healthSafety/winterSafetyModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 export const createWinterSafety = async (req, res) => {
   try {
@@ -28,7 +29,7 @@ export const createWinterSafety = async (req, res) => {
     } catch (saveError) {
       if (saveError.code === 11000 && saveError.keyPattern?.checklistNumber) {
         const year = new Date().getFullYear();
-        const count = await WinterSafety.countDocuments({
+        const count = await highestSequence(WinterSafety, {
           checklistNumber: new RegExp(`^WS-${year}-`),
           ...(companyId ? { company: companyId } : {})
         });

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const additionalItemSchema = new mongoose.Schema({
   item: { type: String, required: true },
@@ -68,7 +69,7 @@ winterSafetySchema.pre('save', async function(next) {
     const year = new Date().getFullYear();
     const WinterSafetyModel = this.constructor;
     const companyFilter = this.company ? { company: this.company } : {};
-    const count = await WinterSafetyModel.countDocuments({
+    const count = await highestSequence(WinterSafetyModel, {
       checklistNumber: new RegExp(`^WS-${year}-`),
       ...companyFilter
     });

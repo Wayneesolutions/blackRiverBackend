@@ -1,5 +1,6 @@
 import { Incident } from "../../models/healthSafety/incidentModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // Helper function to process file uploads
 const processFile = (file) => {
@@ -82,7 +83,7 @@ export const createIncident = async (req, res) => {
         query.company = companyId;
       }
       
-      const count = await Incident.countDocuments(query);
+      const count = await highestSequence(Incident, query);
       incidentNumber = `INC-${year}-${String(count + 1).padStart(4, '0')}`;
       
       const payload = {

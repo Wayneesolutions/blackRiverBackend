@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const mediaFileSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
@@ -140,7 +141,7 @@ incidentSchema.pre('save', async function(next) {
       query.company = this.company;
     }
     
-    const count = await IncidentModel.countDocuments(query);
+    const count = await highestSequence(IncidentModel, query);
     this.incidentNumber = `INC-${year}-${String(count + 1).padStart(4, '0')}`;
   }
   next();

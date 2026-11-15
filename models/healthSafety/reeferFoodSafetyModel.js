@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const mediaFileSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
@@ -68,7 +69,7 @@ reeferFoodSafetySchema.pre('save', async function(next) {
     const year = new Date().getFullYear();
     const ReeferFoodSafetyModel = this.constructor;
     const companyFilter = this.company ? { company: this.company } : {};
-    const count = await ReeferFoodSafetyModel.countDocuments({
+    const count = await highestSequence(ReeferFoodSafetyModel, {
       logNumber: new RegExp(`^RF-${year}-`),
       ...companyFilter
     });

@@ -7,6 +7,7 @@ import { PolicyDocument } from "../../models/healthSafety/policyDocumentModel.js
 import { CAPA } from "../../models/healthSafety/capaModel.js";
 import { Hazard } from "../../models/healthSafety/hazardModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // Helper function to get date range based on period type
 const getDateRange = (periodType, customStartDate, customEndDate) => {
@@ -679,7 +680,7 @@ export const generateReport = async (req, res) => {
     // Generate report number
     const year = new Date().getFullYear();
     const companyFilter = isSuperadmin ? (req.body.company ? { company: req.body.company } : {}) : { company: companyId };
-    const count = await Report.countDocuments({
+    const count = await highestSequence(Report, {
       reportNumber: new RegExp(`^RPT-${year}-`),
       ...companyFilter
     });

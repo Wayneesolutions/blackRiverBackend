@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const spillDetailsSchema = new mongoose.Schema({
   quantity: { type: Number },
@@ -70,7 +71,7 @@ fuelingSpillSchema.pre('save', async function(next) {
     const year = new Date().getFullYear();
     const FuelingSpillModel = this.constructor;
     const companyFilter = this.company ? { company: this.company } : {};
-    const count = await FuelingSpillModel.countDocuments({
+    const count = await highestSequence(FuelingSpillModel, {
       logNumber: new RegExp(`^FP-${year}-`),
       ...companyFilter
     });

@@ -4,6 +4,7 @@ import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { CompanySettings } from "../../models/driver/companysettingsModel.js";
 import { sendInvoiceEmail } from "../../services/emailService.js";
 import { extractFleetInvoiceData } from "../../services/openaiService.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // Money is stored in cents precision: each line amount and each line tax is rounded half-up,
 // so the form, the PDF, the list and the stored total always agree (no $10,862.775).
@@ -285,9 +286,9 @@ export const createFleetInvoice = async (req, res) => {
     let invoiceNumber = req.body.invoiceNumber;
     if (!invoiceNumber) {
       const year = new Date().getFullYear();
-      const count = await FleetInvoice.countDocuments({ 
-        createdAt: { $gte: new Date(year, 0, 1), $lt: new Date(year + 1, 0, 1) }
-      });
+      // Highest number in use, not a count: after a deletion a count gave a number that already
+      // existed and the invoice could not be saved (invoice numbers are unique)
+      const count = await highestSequence(FleetInvoice, { invoiceNumber: new RegExp(`^INV-${year}-\\d+$`) });
       invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, '0')}`;
     }
 

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const participantSchema = new mongoose.Schema({
   employeeId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -45,7 +46,7 @@ trainingSchema.pre('save', async function(next) {
   if (this.isNew && !this.trainingNumber) {
     const year = new Date().getFullYear();
     const TrainingModel = this.constructor;
-    const count = await TrainingModel.countDocuments({
+    const count = await highestSequence(TrainingModel, {
       trainingNumber: new RegExp(`^TRN-${year}-`)
     });
     this.trainingNumber = `TRN-${year}-${String(count + 1).padStart(4, '0')}`;

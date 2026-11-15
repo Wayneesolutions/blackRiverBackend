@@ -1,6 +1,7 @@
 import { Inspection } from "../../models/healthSafety/inspectionModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { withViewUrls } from "../../utils/s3SignedUrl.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // ✅ Create Inspection
 export const createInspection = async (req, res) => {
@@ -42,7 +43,7 @@ export const createInspection = async (req, res) => {
     const maxAttempts = 5;
     
     while (attempts < maxAttempts) {
-      const count = await Inspection.countDocuments({
+      const count = await highestSequence(Inspection, {
         inspectionNumber: new RegExp(`^INS-${year}-`)
       });
       inspectionNumber = `INS-${year}-${String(count + 1).padStart(4, '0')}`;

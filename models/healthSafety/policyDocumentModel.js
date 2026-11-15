@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const policyDocumentSchema = new mongoose.Schema({
   policyNumber: { type: String, required: true, unique: true },
@@ -36,7 +37,7 @@ policyDocumentSchema.pre('save', async function(next) {
   if (this.isNew && !this.policyNumber) {
     const year = new Date().getFullYear();
     const PolicyDocumentModel = this.constructor;
-    const count = await PolicyDocumentModel.countDocuments({
+    const count = await highestSequence(PolicyDocumentModel, {
       policyNumber: new RegExp(`^POL-${year}-`)
     });
     this.policyNumber = `POL-${year}-${String(count + 1).padStart(4, '0')}`;

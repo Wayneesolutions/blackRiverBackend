@@ -1,5 +1,6 @@
 import { CAPA } from "../../models/healthSafety/capaModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // ✅ Create CAPA
 export const createCAPA = async (req, res) => {
@@ -60,7 +61,7 @@ export const createCAPA = async (req, res) => {
       if (saveError.code === 11000 && saveError.keyPattern?.capaNumber) {
         // Retry with a new capaNumber
         const year = new Date().getFullYear();
-        const count = await CAPA.countDocuments({
+        const count = await highestSequence(CAPA, {
           capaNumber: new RegExp(`^CAPA-${year}-`),
           ...(companyId ? { company: companyId } : {})
         });

@@ -1,5 +1,6 @@
 import { PolicyDocument } from "../../models/healthSafety/policyDocumentModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // Helper function to process file uploads
 const processFile = (file) => {
@@ -57,7 +58,7 @@ export const createPolicyDocument = async (req, res) => {
     const maxAttempts = 5;
     
     while (attempts < maxAttempts) {
-      const count = await PolicyDocument.countDocuments({
+      const count = await highestSequence(PolicyDocument, {
         policyNumber: new RegExp(`^POL-${year}-`)
       });
       policyNumber = `POL-${year}-${String(count + 1).padStart(4, '0')}`;

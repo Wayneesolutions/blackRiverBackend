@@ -1,6 +1,7 @@
 import { ReeferFoodSafety } from "../../models/healthSafety/reeferFoodSafetyModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 export const createReeferFoodSafety = async (req, res) => {
   try {
@@ -30,7 +31,7 @@ export const createReeferFoodSafety = async (req, res) => {
     } catch (saveError) {
       if (saveError.code === 11000 && saveError.keyPattern?.logNumber) {
         const year = new Date().getFullYear();
-        const count = await ReeferFoodSafety.countDocuments({
+        const count = await highestSequence(ReeferFoodSafety, {
           logNumber: new RegExp(`^RF-${year}-`),
           ...(companyId ? { company: companyId } : {})
         });

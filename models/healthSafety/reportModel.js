@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const reportSchema = new mongoose.Schema({
   reportNumber: { type: String, required: true, unique: true },
@@ -37,7 +38,7 @@ reportSchema.pre('save', async function(next) {
   if (this.isNew && !this.reportNumber) {
     const year = new Date().getFullYear();
     const ReportModel = this.constructor;
-    const count = await ReportModel.countDocuments({
+    const count = await highestSequence(ReportModel, {
       reportNumber: new RegExp(`^RPT-${year}-`)
     });
     this.reportNumber = `RPT-${year}-${String(count + 1).padStart(4, '0')}`;

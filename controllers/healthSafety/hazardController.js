@@ -1,5 +1,6 @@
 import { Hazard } from "../../models/healthSafety/hazardModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // ✅ Create Hazard
 export const createHazard = async (req, res) => {
@@ -44,7 +45,7 @@ export const createHazard = async (req, res) => {
     const maxAttempts = 5;
     
     while (attempts < maxAttempts) {
-      const count = await Hazard.countDocuments({
+      const count = await highestSequence(Hazard, {
         hazardNumber: new RegExp(`^HAZ-${year}-`)
       });
       hazardNumber = `HAZ-${year}-${String(count + 1).padStart(4, '0')}`;

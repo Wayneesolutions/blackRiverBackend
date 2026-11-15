@@ -1,6 +1,7 @@
 import { FuelingSpill } from "../../models/healthSafety/fuelingSpillModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 export const createFuelingSpill = async (req, res) => {
   try {
@@ -28,7 +29,7 @@ export const createFuelingSpill = async (req, res) => {
     } catch (saveError) {
       if (saveError.code === 11000 && saveError.keyPattern?.logNumber) {
         const year = new Date().getFullYear();
-        const count = await FuelingSpill.countDocuments({
+        const count = await highestSequence(FuelingSpill, {
           logNumber: new RegExp(`^FP-${year}-`),
           ...(companyId ? { company: companyId } : {})
         });

@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 const findingSchema = new mongoose.Schema({
   description: { type: String, required: true },
@@ -80,7 +81,7 @@ inspectionSchema.pre('save', async function(next) {
   if (this.isNew && !this.inspectionNumber) {
     const year = new Date().getFullYear();
     const InspectionModel = this.constructor;
-    const count = await InspectionModel.countDocuments({
+    const count = await highestSequence(InspectionModel, {
       inspectionNumber: new RegExp(`^INS-${year}-`)
     });
     this.inspectionNumber = `INS-${year}-${String(count + 1).padStart(4, '0')}`;

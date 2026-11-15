@@ -1,5 +1,6 @@
 import { Certificate } from "../../models/healthSafety/certificateModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
+import { highestSequence } from '../../utils/highestSequence.js';
 
 // ✅ Create Certificate
 export const createCertificate = async (req, res) => {
@@ -49,7 +50,7 @@ export const createCertificate = async (req, res) => {
     const maxAttempts = 5;
     
     while (attempts < maxAttempts) {
-      const count = await Certificate.countDocuments({
+      const count = await highestSequence(Certificate, {
         certificateNumber: new RegExp(`^CERT-${year}-`)
       });
       certificateNumber = `CERT-${year}-${String(count + 1).padStart(4, '0')}`;
