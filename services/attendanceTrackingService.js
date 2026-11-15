@@ -7,22 +7,24 @@ import { localHHmm, attendanceDateFor, endOfLocalDay, isSameLocalDay } from "../
 /**
  * Roles auto-tracked at login (session created on login)
  */
+// Client (15 Nov): "when an employee logs in the clock should start, until he logs out".
+// Every employee role now starts its work session at login; accountants and mechanics
+// used to have to press Start Work, so a forgotten click meant no attendance and $0 pay.
 const AUTO_TRACKED_ROLES = [
   'hr',
   'dispatcher',
   'Fleet Maintenance Manager',
   'safety officer',
-  'Compliance Manager'
+  'Compliance Manager',
+  'accountant',
+  'Maintenance Crew (Mechanics)'
 ];
 
 /**
  * Roles tracked via manual Start Work button (session NOT created at login)
  */
 const MANUAL_TRACKED_ROLES = [
-  'accountant',
-  'Maintenance Crew (Mechanics)',
-  // The company admin also has the Start Work / Break widget; their time was recorded in a
-  // session but never shown in Attendance. They now show like any manual-start employee.
+  // The company admin (owner) keeps the Start Work / Break widget; they are not on payroll.
   'admin'
 ];
 
@@ -168,9 +170,16 @@ export const recordLogout = async (userId, autoLoggedOut = false) => {
       inactiveMinutes = timeSinceLastActivity - inactivityThreshold;
     }
     
-    // Calculate active minutes (excluding inactivity periods > 1 hour)
-    // Active time = total time - inactive time (but minimum 0)
-    const activeMinutes = Math.max(0, totalSessionMinutes - inactiveMinutes);
+    // Breaks taken with the Break button are not paid time
+    const breakMinutes = (activeSession.breaks || []).reduce((sum, b) => {
+      if (!b.start) return sum;
+      const end = b.end ? new Date(b.end) : now;
+      return sum + Math.max(0, (end - new Date(b.start)) / (1000 * 60));
+    }, 0);
+
+    // Calculate active minutes (excluding inactivity periods > 1 hour and breaks)
+    // Active time = total time - inactive time - breaks (but minimum 0)
+    const activeMinutes = Math.max(0, totalSessionMinutes - inactiveMinutes - breakMinutes);
     
     console.log('📊 Session calculation:', {
       userId: userId.toString(),
@@ -334,7 +343,13 @@ export const closeDayBoundarySession = async (session) => {
     const loginTime = new Date(session.loginTime);
     // Local calendar day of the session (stored as UTC midnight), and the real instant it ends
     const sessionDay = attendanceDateFor(loginTime);
-    const endOfDay = endOfLocalDay(loginTime);
+    const endOfLoginDay = endOfLocalDay(loginTime);
+    // Someone who closed the browser without logging out is not paid until midnight:
+    // the session ends at their last activity (every API call updates it), capped at end of day.
+    const lastActivity = session.lastActivityTime ? new Date(session.lastActivityTime) : null;
+    const endOfDay = lastActivity && lastActivity > loginTime && lastActivity < endOfLoginDay
+      ? lastActivity
+      : endOfLoginDay;
     const sessionDayEnd = new Date(sessionDay.getTime() + 24 * 3600 * 1000 - 1);
 
     // Cap any open breaks at end of day, sum total break time
@@ -354,7 +369,7 @@ export const closeDayBoundarySession = async (session) => {
     });
 
     const checkInTime = localHHmm(loginTime);
-    const checkOutTime = '23:59';
+    const checkOutTime = endOfDay < endOfLoginDay ? localHHmm(endOfDay) : '23:59';
     const totalHours = activeMinutes / 60;
 
     const filter = session.company
@@ -365,10 +380,9 @@ export const closeDayBoundarySession = async (session) => {
     if (existing) {
       existing.checkOut = checkOutTime;
       existing.totalHours = Math.max(existing.totalHours || 0, totalHours);
-      if (!existing.notes?.includes('Auto-closed at day boundary')) {
-        existing.notes = existing.notes
-          ? `${existing.notes}; Auto-closed at day boundary`
-          : 'Auto-closed at day boundary';
+      const note = 'No logout - closed at last activity';
+      if (!existing.notes?.includes(note)) {
+        existing.notes = existing.notes ? `${existing.notes}; ${note}` : note;
       }
       await existing.save();
     } else {
@@ -379,7 +393,7 @@ export const closeDayBoundarySession = async (session) => {
         checkOut: checkOutTime,
         status: 'present',
         totalHours,
-        notes: 'Auto-closed at day boundary',
+        notes: 'No logout - closed at last activity',
         company: session.company || null,
         isAutoTracked: true
       });

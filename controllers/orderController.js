@@ -6,6 +6,8 @@ import { User } from "../models/driver/userModel.js";
 import { Trailer } from "../models/driver/trailerModel.js";
 import ActivityLog from "../models/activitylogModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
+import { PAYROLL_ORDER_STATUSES } from "../utils/payrollItems.js";
+import { syncBrokeredLoadBill } from "./hr/billController.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import Place from "../models/driver/placeModel.js";
 import { validateDocuments } from "../services/documentValidationService.js";
@@ -646,6 +648,10 @@ export const createOrder = async (req, res) => {
       dispatcher: normalizeString(req.body.dispatcher),
       dispatcherEmail: normalizeString(req.body.dispatcherEmail),
       bookedForCarrier: normalizeBoolean(req.body.bookedForCarrier),
+      carrier: req.body.carrier && mongoose.Types.ObjectId.isValid(req.body.carrier) ? req.body.carrier : null,
+      carrierName: normalizeString(req.body.carrierName),
+      carrierRate: normalizeNumber(req.body.carrierRate) || 0,
+      carrierCurrency: normalizeString(req.body.carrierCurrency) || normalizeString(req.body.rateCurrency) || 'CAD',
       sendToFactor: normalizeBoolean(req.body.sendToFactor),
       // Tax configuration
       taxCode: normalizeString(req.body.taxCode) || 'No Tax',
@@ -771,6 +777,11 @@ export const createOrder = async (req, res) => {
 
     const order = new Order(orderData);
     await order.save();
+
+    // Load sold to another carrier -> payable in Accounts Payable
+    if (order.bookedForCarrier) {
+      await syncBrokeredLoadBill(order, req.user?._id);
+    }
 
     // Update trailer dispatch information if trailer is assigned
     if (order.trailer) {
@@ -2193,6 +2204,12 @@ export const updateOrder = async (req, res) => {
     if (req.body.dispatcher !== undefined) order.dispatcher = normalizeString(req.body.dispatcher);
     if (req.body.dispatcherEmail !== undefined) order.dispatcherEmail = normalizeString(req.body.dispatcherEmail);
     if (req.body.bookedForCarrier !== undefined) order.bookedForCarrier = normalizeBoolean(req.body.bookedForCarrier);
+    if (req.body.carrier !== undefined) order.carrier = req.body.carrier && mongoose.Types.ObjectId.isValid(req.body.carrier) ? req.body.carrier : null;
+    if (req.body.carrierName !== undefined) order.carrierName = normalizeString(req.body.carrierName);
+    if (req.body.carrierRate !== undefined) order.carrierRate = normalizeNumber(req.body.carrierRate) || 0;
+    if (req.body.carrierCurrency !== undefined) order.carrierCurrency = normalizeString(req.body.carrierCurrency) || 'CAD';
+    const carrierFieldsTouched = ['bookedForCarrier', 'carrier', 'carrierName', 'carrierRate', 'carrierCurrency']
+      .some(k => req.body[k] !== undefined);
     if (req.body.sendToFactor !== undefined) order.sendToFactor = normalizeBoolean(req.body.sendToFactor);
 
     // Update tax configuration
@@ -2473,6 +2490,11 @@ export const updateOrder = async (req, res) => {
     } catch (saveError) {
       console.error('📋 [ORDER UPDATE] Error saving order:', saveError);
       throw saveError;
+    }
+
+    // Keep the carrier payable in step with the load (create / update / void)
+    if (carrierFieldsTouched) {
+      await syncBrokeredLoadBill(order, req.user?._id);
     }
 
     // Update trailer dispatch information if trailer is assigned
@@ -3667,7 +3689,7 @@ export const getCompletedOrdersByDriver = async (req, res) => {
         { driver: driverObjectId },
         { coDriver: driverObjectId }
       ],
-      status: 'completed' // Match the enum in orderModel (lowercase)
+      status: { $in: PAYROLL_ORDER_STATUSES } // delivered loads count too, not only POD-approved
     };
 
     // Add company filter
@@ -3741,6 +3763,15 @@ export const getCompletedOrdersByDriver = async (req, res) => {
       .lean();
 
     console.log(`📦 Found ${completedOrders.length} completed orders for driver`);
+
+    // Orders already paid in another payroll for this driver are flagged (and unticked on the page)
+    const { Payroll } = await import("../models/hr/payrollSchemaModel.js");
+    const paidPayrolls = completedOrders.length > 0
+      ? await Payroll.find({ userId: driverObjectId, orders: { $in: completedOrders.map(o => o._id) } })
+          .select('orders startDate endDate').lean()
+      : [];
+    const paidOrderMap = new Map();
+    paidPayrolls.forEach(p => (p.orders || []).forEach(oid => paidOrderMap.set(String(oid), p)));
 
     // Calculate distance and earnings for each order
     const ordersWithCalculations = await Promise.all(completedOrders.map(async (order) => {
@@ -4043,6 +4074,8 @@ export const getCompletedOrdersByDriver = async (req, res) => {
         truck: order.truck,
         trailer: order.trailer,
         status: order.status,
+        alreadyPaid: paidOrderMap.has(String(order._id)),
+        paidInPayroll: paidOrderMap.get(String(order._id))?._id || null,
         deliveryDate: order.deliveryDate,
         pickupDate: order.pickupDate,
         createdAt: order.createdAt,

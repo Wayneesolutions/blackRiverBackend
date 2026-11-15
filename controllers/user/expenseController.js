@@ -586,6 +586,8 @@ export const getExpenses = async (req, res) => {
     const companyFilter = companyId ? { company: companyId } : null;
     const query = await getCombinedFilter(req.user, companyFilter) || {};
 
+    if (req.query.documentType) query.documentType = req.query.documentType;
+
     // Get expenses with basic populate (don't populate vehicle/trailer yet to preserve IDs)
     const expenses = await Expense.find(query)
       .populate("userId", "name role")

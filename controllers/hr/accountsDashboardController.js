@@ -10,6 +10,9 @@ import { Vehicle } from "../../models/driver/vehicleModel.js";
 import { Trailer } from "../../models/driver/trailerModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { getCombinedFilter } from "../../utils/trialDataFilter.js";
+import { Bill } from "../../models/hr/billModel.js";
+import Order from "../../models/orderModel.js";
+import { PAYROLL_ORDER_STATUSES } from "../../utils/payrollItems.js";
 
 // Get Accounts Dashboard Statistics
 export const getAccountsDashboard = async (req, res) => {
@@ -269,16 +272,19 @@ export const getAccountsDashboard = async (req, res) => {
     });
     
     // Employee paid count = Employees with payroll records (payroll creation means payment processed)
-    const employeePaidCount = employeesWithPayroll.size;
+    // Paid = payroll generated AND marked paid (not just "has a payroll record")
+    const employeePaidCount = new Set(employeePayrolls.filter(p => p.paymentStatus === 'paid')
+      .map(p => String(p.userId?._id || p.userId))).size;
     
     // Employee unpaid count = Total employees - Employees with payroll
     // This includes employees without any payroll records
     const employeeUnpaidCount = Math.max(0, totalEmployeeCount - employeesWithPayroll.size);
     
     // Calculate amounts
-    const employeePaid = 0; // TODO: Add payment tracking to Payroll model
-    const employeeUnpaid = employeePayrolls.reduce((sum, payroll) => 
-      sum + normalizeAmount(payroll.totalSalary), 0);
+    const employeePaid = employeePayrolls.filter(p => p.paymentStatus === 'paid')
+      .reduce((sum, payroll) => sum + normalizeAmount(payroll.totalSalary), 0);
+    const employeeUnpaid = employeePayrolls.filter(p => p.paymentStatus !== 'paid')
+      .reduce((sum, payroll) => sum + normalizeAmount(payroll.totalSalary), 0);
     
     // === DRIVER PAYMENT COUNTS ===
     // Get unique driver IDs who have payroll records (similar to employees)
@@ -310,7 +316,8 @@ export const getAccountsDashboard = async (req, res) => {
     });
     
     // Driver paid count = Drivers with payroll records (payroll creation means payment processed)
-    const driverPaidCount = driversWithPayroll.size;
+    const driverPaidCount = new Set(driverPayrolls.filter(p => p.paymentStatus === 'paid')
+      .map(p => String(p.userId?._id || p.userId))).size;
     
     // Driver unpaid count = Total drivers - Drivers with payroll
     // This includes drivers without any payroll records
@@ -331,6 +338,85 @@ export const getAccountsDashboard = async (req, res) => {
 
     // === NET PROFIT ===
     const netProfit = totalRevenue - totalExpenses - totalPayroll;
+
+    // ================= SIMPLE KPIs (client 15 Nov) =================
+    // "payables, receivables, paid payrolls, pending payrolls, per mile cost and per mile profit"
+    // Optional period: ?startDate=&endDate= (dates of invoices, payroll pay dates, expenses, loads)
+    const { startDate, endDate } = req.query;
+    const from = startDate ? new Date(new Date(startDate).setHours(0, 0, 0, 0)) : null;
+    const to = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)) : null;
+    const inPeriod = (d) => (!from && !to) || (d && (!from || new Date(d) >= from) && (!to || new Date(d) <= to));
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    // Receivables: invoices not paid yet (what customers owe us)
+    const periodInvoices = invoices.filter(inv => inPeriod(inv.invoiceDate || inv.createdAt));
+    const receivables = periodInvoices
+      .filter(inv => inv.status !== 'paid')
+      .reduce((sum, inv) => sum + normalizeAmount(inv.amount), 0);
+    const receivablesOverdue = periodInvoices
+      .filter(inv => inv.status !== 'paid' && inv.dueDate && new Date(inv.dueDate) < today)
+      .reduce((sum, inv) => sum + normalizeAmount(inv.amount), 0);
+
+    // Payables: open bills in Accounts Payable (carriers, shops, suppliers)
+    const companyMatch = !isSuperadmin && companyId ? { company: companyId } : {};
+    const openBills = await Bill.find({ ...companyMatch, status: { $in: ['unpaid', 'partial'] } }).lean();
+    const billBalance = (b) => Math.max(0, (b.amount || 0) + (b.taxAmount || 0) - (b.paidAmount || 0));
+    const payables = openBills.filter(b => inPeriod(b.billDate)).reduce((s, b) => s + billBalance(b), 0);
+    const payablesOverdue = openBills
+      .filter(b => inPeriod(b.billDate) && b.dueDate && new Date(b.dueDate) < today)
+      .reduce((s, b) => s + billBalance(b), 0);
+
+    // Payrolls: only what was actually generated. A payroll is "paid" once Accounts marks it
+    // paid (before, every employee with any payroll counted as paid - even ones not generated).
+    const periodPayrolls = payrolls.filter(p => inPeriod(p.payDate || p.endDate));
+    const periodSettlements = settlements.filter(st => inPeriod(st.paymentDate || st.payPeriod?.endDate));
+    const paidPayrollRecords = periodPayrolls.filter(p => p.paymentStatus === 'paid');
+    const pendingPayrollRecords = periodPayrolls.filter(p => p.paymentStatus !== 'paid');
+    const paidSettlementRecords = periodSettlements.filter(st => st.status === 'Paid');
+    const pendingSettlementRecords = periodSettlements.filter(st => st.status === 'Pending' || st.status === 'Processing');
+    const paidPayrolls = paidPayrollRecords.reduce((s, p) => s + normalizeAmount(p.totalSalary), 0)
+      + paidSettlementRecords.reduce((s, st) => s + normalizeAmount(st.netPay), 0);
+    const pendingPayrolls = pendingPayrollRecords.reduce((s, p) => s + normalizeAmount(p.totalSalary), 0)
+      + pendingSettlementRecords.reduce((s, st) => s + normalizeAmount(st.netPay), 0);
+
+    // Per-mile cost and profit: miles of delivered loads in the period (distance stored in km)
+    const loadQuery = { ...companyMatch, status: { $in: PAYROLL_ORDER_STATUSES } };
+    if (from || to) {
+      loadQuery.deliveryDate = {};
+      if (from) loadQuery.deliveryDate.$gte = from;
+      if (to) loadQuery.deliveryDate.$lte = to;
+    }
+    const loads = await Order.find(loadQuery).select('distance').lean();
+    const totalMiles = loads.reduce((s, o) => s + (Number(o.distance) || 0) * 0.621371, 0);
+
+    const periodExpenses = expenses.filter(e => inPeriod(e.date || e.createdAt)).reduce((s, e) => s + normalizeAmount(e.amount), 0)
+      + fuelReports.filter(f => inPeriod(f.date || f.transactionDate || f.createdAt)).reduce((s, f) => s + normalizeAmount(f.totalCost || f.amount || 0), 0)
+      + repairs.filter(r => inPeriod(r.serviceDate || r.createdAt)).reduce((s, r) => s + normalizeAmount(r.completionTotalAmount || r.amount || 0), 0)
+      + paidFleetInvoices.filter(fi => inPeriod(fi.date || fi.invoiceDate || fi.createdAt)).reduce((s, fi) => s + normalizeAmount(fi.total || 0), 0);
+    const periodCarrierCost = (await Bill.find({ ...companyMatch, source: 'brokered_load', status: { $ne: 'void' } }).lean())
+      .filter(b => inPeriod(b.billDate)).reduce((s, b) => s + (b.amount || 0), 0);
+    const periodPayrollCost = periodPayrolls.reduce((s, p) => s + normalizeAmount(p.totalSalary), 0)
+      + periodSettlements.filter(st => st.status !== 'Cancelled').reduce((s, st) => s + normalizeAmount(st.netPay), 0);
+    const periodRevenue = periodInvoices.reduce((s, inv) => s + normalizeAmount(inv.amount), 0);
+    const periodCost = periodExpenses + periodCarrierCost + periodPayrollCost;
+
+    const kpis = {
+      period: { startDate: from, endDate: to },
+      payables: r2(payables),
+      payablesOverdue: r2(payablesOverdue),
+      payablesCount: openBills.filter(b => inPeriod(b.billDate)).length,
+      receivables: r2(receivables),
+      receivablesOverdue: r2(receivablesOverdue),
+      paidPayrolls: r2(paidPayrolls),
+      paidPayrollCount: paidPayrollRecords.length + paidSettlementRecords.length,
+      pendingPayrolls: r2(pendingPayrolls),
+      pendingPayrollCount: pendingPayrollRecords.length + pendingSettlementRecords.length,
+      totalMiles: r2(totalMiles),
+      revenue: r2(periodRevenue),
+      totalCost: r2(periodCost),
+      costPerMile: totalMiles > 0 ? r2(periodCost / totalMiles) : 0,
+      profitPerMile: totalMiles > 0 ? r2((periodRevenue - periodCost) / totalMiles) : 0,
+    };
 
     const responseData = {
       totalRevenue,
@@ -354,7 +440,9 @@ export const getAccountsDashboard = async (req, res) => {
       employeeUnpaidCount,
       driverPaidCount,
       driverUnpaidCount,
-      fleetCounts
+      fleetCounts,
+      // Simplified dashboard cards
+      ...kpis
     };
     
     console.log('📊 [Accounts Dashboard] Final response data:', {

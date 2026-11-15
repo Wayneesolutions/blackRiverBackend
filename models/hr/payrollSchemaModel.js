@@ -50,6 +50,30 @@ const payrollSchema = new mongoose.Schema({
   layoverAmount: { type: Number, default: 0 },
   // Safety bonus
   safetyBonus: { type: Number, default: 0 },
+  // Itemised additions / deductions - every line says what it is for (printed on the pay statement)
+  additionItems: [{
+    memo: { type: String, required: true },
+    amount: { type: Number, default: 0 },
+    date: { type: Date },
+    load: { type: String },
+    per: { type: String, default: 'One Time' },
+    source: { type: String, default: 'manual' } // manual | profile | trip
+  }],
+  deductionItems: [{
+    memo: { type: String, required: true },
+    amount: { type: Number, default: 0 },
+    date: { type: Date },
+    load: { type: String },
+    per: { type: String, default: 'One Time' },
+    source: { type: String, default: 'manual' }
+  }],
+  // Tax is optional: when false no tax is deducted (company decides, not the software)
+  applyTaxes: { type: Boolean, default: false },
+  // Payment tracking: a payroll is "pending" until accounts marks it paid
+  paymentStatus: { type: String, enum: ['pending', 'paid'], default: 'pending', index: true },
+  paidAt: { type: Date },
+  paymentMethod: { type: String },
+  chequeNumber: { type: String },
   company: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "CompanySettings",

@@ -9,7 +9,7 @@ const toStartOfDay = (d) => new Date(new Date(d).setHours(0,0,0,0));
 
 export const listAttendance = async (req, res) => {
   try {
-    const { month, year, date, employee, includeActiveSessions = true } = req.query;
+    const { month, year, date, startDate, endDate, employee, includeActiveSessions = true } = req.query;
     const companyId = getUserCompanyId(req.user);
     
     if (!companyId && req.user?.role !== 'superadmin') {
@@ -28,6 +28,12 @@ export const listAttendance = async (req, res) => {
       const dateObj = new Date(`${String(date).slice(0, 10)}T00:00:00.000Z`);
       const endDate = new Date(dateObj.getTime() + 24 * 3600 * 1000 - 1);
       filter.date = { $gte: dateObj, $lte: endDate };
+    } else if (startDate || endDate) {
+      // Any date range (payroll periods can span months, e.g. 02/01 - 03/31)
+      const range = {};
+      if (startDate) range.$gte = new Date(`${String(startDate).slice(0, 10)}T00:00:00.000Z`);
+      if (endDate) range.$lte = new Date(new Date(`${String(endDate).slice(0, 10)}T00:00:00.000Z`).getTime() + 24 * 3600 * 1000 - 1);
+      filter.date = range;
     } else if (month && year) {
       // Filter by month and year
       const start = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
@@ -40,11 +46,13 @@ export const listAttendance = async (req, res) => {
       'accountant', 'Maintenance Crew (Mechanics)', 'admin'
     ];
     
+    // When one employee is asked for (payroll), return their records whatever their role:
+    // a manually added day for e.g. a salesperson used to be dropped here, so payroll showed nothing.
     const data = await Attendance.find(filter)
       .populate({
         path: "employee",
         select: "name email role internalId",
-        match: { role: { $in: trackedRoles } } // Only include employees with tracked roles
+        ...(employee ? {} : { match: { role: { $in: trackedRoles } } }) // Only include employees with tracked roles
       })
       .sort({ date: -1, createdAt: -1 })
       .lean();
@@ -162,13 +170,13 @@ export const upsertAttendance = async (req, res) => {
     }
     
     // Handle date parsing - can be ISO string (YYYY-MM-DD) or Date object
+    // Stored like auto-tracked days: UTC midnight of the calendar day the user picked.
+    // A full ISO time from the browser (evening in Winnipeg = next day in UTC) no longer shifts the day.
     let dateObj;
-    if (typeof date === 'string') {
-      // Parse ISO date string (YYYY-MM-DD) and set to start of day
-      dateObj = new Date(date);
-      dateObj.setHours(0, 0, 0, 0);
+    if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(date)) {
+      dateObj = new Date(`${date.slice(0, 10)}T00:00:00.000Z`);
     } else {
-      dateObj = toStartOfDay(date || new Date());
+      dateObj = attendanceDateFor(date ? new Date(date) : new Date());
     }
     
     let totalHours = 0;
@@ -177,7 +185,9 @@ export const upsertAttendance = async (req, res) => {
         const [ih, im] = checkIn.split(":").map(Number);
         const [oh, om] = checkOut.split(":").map(Number);
         if (!isNaN(ih) && !isNaN(im) && !isNaN(oh) && !isNaN(om)) {
-          totalHours = Math.max(0, ((oh * 60 + om) - (ih * 60 + im)) / 60);
+          let minutes = (oh * 60 + om) - (ih * 60 + im);
+          if (minutes < 0) minutes += 24 * 60; // shift past midnight
+          totalHours = Math.max(0, minutes / 60);
         }
       } catch (timeError) {
         console.error("Error calculating hours:", timeError);
@@ -188,9 +198,7 @@ export const upsertAttendance = async (req, res) => {
     // Normalize date to start of day for consistent comparison
     // Use date range to find existing records regardless of time component
     const startOfDay = new Date(dateObj);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(dateObj);
-    endOfDay.setHours(23, 59, 59, 999);
+    const endOfDay = new Date(dateObj.getTime() + 24 * 3600 * 1000 - 1);
     
     // Check if record already exists for this employee and date (regardless of time)
     const existingFilter = companyId 

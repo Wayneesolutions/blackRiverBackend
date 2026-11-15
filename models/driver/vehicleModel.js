@@ -85,6 +85,8 @@ const vehicleSchema = new mongoose.Schema(
     odometer: { type: Number, default: 0 }, // km
     trackingKey: { type: String }, // Tracking key for GPS/telematics
     assetValue: { type: Number }, // Asset value
+    purchasePrice: { type: Number }, // What the unit was bought for (fleet spend report)
+    purchaseDate: { type: Date },
     engineOn: { type: Boolean, default: false },
 
     // Behaviour Metrics

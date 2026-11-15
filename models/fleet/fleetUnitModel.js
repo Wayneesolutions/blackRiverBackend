@@ -20,6 +20,8 @@ const fleetUnitSchema = new mongoose.Schema(
     unitNo: { type: String, required: true },
     internalId: { type: String, unique: true, sparse: true }, // Internal ID for tracking
     unitType: { type: String, enum: UNIT_TYPES, required: true },
+    purchasePrice: { type: Number }, // What the unit was bought for (fleet spend report)
+    purchaseDate: { type: Date },
     makeModel: { type: String, required: true },
     make: { type: String },
     model: { type: String },

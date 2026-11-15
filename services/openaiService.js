@@ -1007,19 +1007,12 @@ export const extractExpenseFromReceipt = async (fileBuffer, mimeType) => {
       };
     }
 
-    // For PDFs, we'll need to use a different approach or convert to image first
-    // For now, we'll handle images and note that PDF support may require additional processing
-    if (isPDF) {
-      // Note: OpenAI Vision API doesn't directly support PDFs
-      // You might need to convert PDF to images first or use a different approach
-      return {
-        success: false,
-        error: 'PDF extraction requires conversion to images first. Please upload an image file.',
-        data: null
-      };
-    }
+    // PDFs (supplier invoices, bills) are sent as a file part - gpt-4o reads PDF pages directly
+    const filePart = isPDF
+      ? { type: 'file', file: { filename: 'expense.pdf', file_data: `data:application/pdf;base64,${base64Image}` } }
+      : { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } };
 
-    const systemPrompt = `You are an expert expense receipt analyzer. Extract all relevant information from the receipt image and return it in a structured JSON format. Be accurate and precise. If a field is not found in the receipt, return null for that field.`;
+    const systemPrompt = `You are an expert expense receipt analyzer. Extract all relevant information from the receipt or invoice (image or PDF) and return it in a structured JSON format. Be accurate and precise. If a field is not found in the receipt, return null for that field.`;
 
     const userPrompt = `Analyze this receipt image and extract all expense information. Return a JSON object with the following structure (use null for missing fields):
 
@@ -1060,12 +1053,7 @@ Guidelines:
                 type: 'text',
                 text: userPrompt
               },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:${mimeType};base64,${base64Image}`
-                }
-              }
+              filePart
             ]
           }
         ],
