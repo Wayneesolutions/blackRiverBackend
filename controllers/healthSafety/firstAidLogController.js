@@ -23,8 +23,11 @@ export const createFirstAidLog = async (req, res) => {
       firstAidProvided,
       treatedBy,
       followUpRequired,
-      followUpNotes
+      followUpNotes,
+      latitude,
+      longitude
     } = req.body;
+    const coord = (v) => (v === '' || v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
 
     if (!date || !time || !location || !injuredPerson || !injuryDescription || !firstAidProvided || !treatedBy) {
       return res.status(400).json({
@@ -43,6 +46,8 @@ export const createFirstAidLog = async (req, res) => {
       treatedBy: treatedBy.trim(),
       followUpRequired: followUpRequired === true || followUpRequired === 'true',
       followUpNotes: followUpNotes?.trim() || '',
+      latitude: coord(latitude),
+      longitude: coord(longitude),
       company: isSuperadmin ? req.body.company || null : companyId,
       createdBy: req.user._id
     });

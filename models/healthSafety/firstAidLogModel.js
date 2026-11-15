@@ -4,6 +4,9 @@ const firstAidLogSchema = new mongoose.Schema({
   date: { type: Date, required: true },
   time: { type: String, required: true },
   location: { type: String, required: true },
+  // Map position of the location (from the address search), for Google Maps
+  latitude: { type: Number, default: null },
+  longitude: { type: Number, default: null },
   injuredPerson: { type: String, required: true },
   injuryDescription: { type: String, required: true },
   firstAidProvided: { type: String, required: true },
