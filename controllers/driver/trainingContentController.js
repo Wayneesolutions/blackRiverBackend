@@ -152,6 +152,7 @@ export const getTrainingContent = async (req, res) => {
       // used to show up in the driver app as well.
       query.$or = [
         { assignedRoles: { $exists: false } },
+        { assignedRoles: null }, // saved without roles: was matched by neither line above, so hidden
         { assignedRoles: { $size: 0 } },
         { assignedRoles: 'driver' }
       ];

@@ -49,10 +49,13 @@ export const createIncident = async (req, res) => {
       hasInjury
     } = req.body;
 
-    if (!date || !time || !location || !locationType || !type || !severity || !reportedBy || !description) {
+    const missing = Object.entries({ date, time, location, locationType, type, severity, reportedBy, description })
+      .filter(([, v]) => !String(v ?? '').trim())
+      .map(([k]) => k);
+    if (missing.length) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields."
+        message: `Missing required fields: ${missing.join(', ')}`
       });
     }
 
