@@ -18,6 +18,12 @@ export const highestSequence = async (Model, query) => {
   const field = Object.keys(query).find((key) => query[key] instanceof RegExp);
   if (!field) throw new Error('highestSequence: the query needs the number field as a RegExp');
 
+  // When the number is unique across ALL companies (unique: true on the field itself), a
+  // per-company search would hand a second company a number the first one already uses.
+  // Only a compound { number, company } index makes numbers per company.
+  const globallyUnique = Model.schema?.path?.(field)?.options?.unique === true;
+  if (globallyUnique) query = { [field]: query[field] };
+
   // numericOrdering sorts INC-2026-10000 after INC-2026-9999
   const latest = await Model.findOne(query)
     .select(field)
