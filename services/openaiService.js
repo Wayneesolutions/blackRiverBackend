@@ -2343,13 +2343,29 @@ export const extractFleetInvoiceData = async (fileBuffer, mimeType) => {
         };
       }
 
-      messages = [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `Analyze the following invoice text extracted from a PDF and extract all data.\n\n${INVOICE_EXTRACTION_PROMPT}\n\nINVOICE TEXT:\n${pdfText}`
-        }
-      ];
+      if ((pdfText || '').replace(/\s+/g, '').length < 40) {
+        // Scanned invoice: the PDF has no text layer, so the text path had nothing to read.
+        // Send the PDF itself; GPT-4o reads the page images.
+        console.log('📄 Invoice PDF has no text layer (scan); sending the PDF file instead');
+        messages = [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: `Analyze this scanned invoice PDF and extract all data.\n\n${INVOICE_EXTRACTION_PROMPT}` },
+              { type: 'file', file: { filename: 'invoice.pdf', file_data: `data:application/pdf;base64,${fileBuffer.toString('base64')}` } }
+            ]
+          }
+        ];
+      } else {
+        messages = [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: `Analyze the following invoice text extracted from a PDF and extract all data.\n\n${INVOICE_EXTRACTION_PROMPT}\n\nINVOICE TEXT:\n${pdfText}`
+          }
+        ];
+      }
     } else {
       // --- Image path: use GPT-4o vision ---
       const base64 = fileBuffer.toString('base64');

@@ -290,6 +290,17 @@ export const createFleetInvoice = async (req, res) => {
       // existed and the invoice could not be saved (invoice numbers are unique)
       const count = await highestSequence(FleetInvoice, { invoiceNumber: new RegExp(`^INV-${year}-\\d+$`) });
       invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, '0')}`;
+    } else {
+      // Invoice numbers are unique across the system. An uploaded vendor invoice keeps the vendor's
+      // number, so the same vendor invoice (or another one with that number) failed with a raw
+      // database error. Say what is wrong instead.
+      invoiceNumber = String(invoiceNumber).trim();
+      if (await FleetInvoice.exists({ invoiceNumber })) {
+        return res.status(409).json({
+          success: false,
+          message: `Invoice number ${invoiceNumber} already exists. If this invoice was already uploaded, open that one; otherwise change the invoice number (or clear it to get the next INV number) and save again.`
+        });
+      }
     }
 
     const companyId = getUserCompanyId(req.user);
@@ -386,6 +397,9 @@ export const createFleetInvoice = async (req, res) => {
       data: populatedInvoice
     });
   } catch (err) {
+    if (err?.code === 11000 && err?.keyPattern?.invoiceNumber) {
+      return res.status(409).json({ success: false, message: 'This invoice number already exists. Change the invoice number and save again.' });
+    }
     res.status(400).json({ success: false, message: err.message, error: err.message });
   }
 };
