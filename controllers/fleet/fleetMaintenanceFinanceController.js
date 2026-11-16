@@ -210,6 +210,23 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       .populate('categoryId', 'name')
       .select('vehicle trailer amount date categoryId type')
       .lean();
+    // A unit referenced by an expense may not be in the company-scoped unit lists above
+    // (e.g. trailer saved without a company). Look those up by id so the report shows
+    // "TRL-203" instead of the raw Mongo id.
+    const unknownIds = [...new Set(unitExpenses
+      .map(ex => String(ex.vehicle || ex.trailer || ''))
+      .filter(id => id && !units.has(id) && mongoose.Types.ObjectId.isValid(id)))];
+    if (unknownIds.length) {
+      const [fu, ve, tr] = await Promise.all([
+        FleetUnit.find({ _id: { $in: unknownIds } }).select('_id internalId unitNo licensePlate unitType purchasePrice').lean(),
+        Vehicle.find({ _id: { $in: unknownIds } }).select('_id internalId unitNumber plateNumber purchasePrice assetValue').lean(),
+        Trailer.find({ _id: { $in: unknownIds } }).select('_id unitNumber trailer plateNumber purchasePrice').lean(),
+      ]);
+      fu.forEach(u => register(u._id.toString(), u.unitNo || u.internalId || u.licensePlate || u._id.toString(),
+        /trailer/i.test(u.unitType || '') ? 'Trailer' : 'Truck', 0, u.purchasePrice));
+      ve.forEach(v => register(v._id.toString(), v.internalId || v.unitNumber || v.plateNumber || v._id.toString(), 'Truck', 0, v.purchasePrice || v.assetValue));
+      tr.forEach(t => register(t._id.toString(), t.unitNumber || t.trailer || t.plateNumber || t._id.toString(), 'Trailer', 0, t.purchasePrice));
+    }
     unitExpenses.forEach(ex => {
       const key = resolveKey(ex.vehicle || ex.trailer, null, ex.trailer ? 'Trailer' : 'Truck');
       const label = ex.categoryId?.name || ex.type || 'Expenses';

@@ -496,6 +496,11 @@ export const createPayroll = async (req, res) => {
           amount: pureBonus
         });
       }
+      // Itemised additions (e.g. "Layover") must appear on the statement with their memo,
+      // otherwise Total Earnings is higher than the lines shown.
+      if (itemized) {
+        additionItems.forEach((a) => earningsBreakdown.push({ type: a.memo, units: '', rate: 0, amount: a.amount }));
+      }
       if (mileageEarnings > 0) {
         earningsBreakdown.push({
           type: 'Trip Pay / Mileage',
@@ -1323,6 +1328,15 @@ export const updatePayroll = async (req, res) => {
           paystub.additions = toPaystubAdditions(payroll.additionItems || []);
           paystub.deductionItems = toPaystubDeductions(payroll.deductionItems || []);
           paystub.deductions.deductionsBreakdown = (payroll.deductionItems || []).map(d => ({ type: d.memo, amount: d.amount }));
+          // Rebuild earnings lines so edited addition memos show on the statement
+          const itemsTotal = (payroll.additionItems || []).reduce((t, a) => t + Number(a.amount || 0), 0);
+          const pureBonus = Math.max(0, Number(payroll.bonus || 0) - itemsTotal);
+          const kept = (paystub.earnings.earningsBreakdown || []).filter(e =>
+            ['Regular Pay', 'Basic Pay', 'Trip Pay', 'Trip Pay / Mileage'].includes(e.type));
+          kept.forEach(e => { if (e.type !== 'Trip Pay / Mileage') e.amount = payroll.baseSalary; });
+          if (pureBonus > 0) kept.push({ type: 'Bonus', units: '', rate: 0, amount: pureBonus });
+          (payroll.additionItems || []).forEach(a => kept.push({ type: a.memo, units: '', rate: 0, amount: Number(a.amount || 0) }));
+          paystub.earnings.earningsBreakdown = kept;
         }
         paystub.hoursWorked = {
           totalHours: payroll.totalHours || 0,

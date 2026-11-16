@@ -1768,14 +1768,19 @@ export const bulkCreateDriverPayrolls = async (req, res) => {
               amount: base
             });
           }
-          if (extra > 0) {
+          // Show each addition with its memo; only the remainder is a plain bonus
+          const additionLines = (payroll.additionItems || []).filter(a => Number(a.amount) > 0);
+          const additionLinesTotal = additionLines.reduce((t, a) => t + Number(a.amount), 0);
+          const pureBonus = Math.round((extra - additionLinesTotal) * 100) / 100;
+          if (pureBonus > 0) {
             earningsBreakdown.push({
               type: 'Bonus',
               units: '',
               rate: 0,
-              amount: extra
+              amount: pureBonus
             });
           }
+          additionLines.forEach(a => earningsBreakdown.push({ type: a.memo, units: '', rate: 0, amount: Number(a.amount) }));
           if (mileageEarnings > 0) {
             earningsBreakdown.push({
               type: 'Trip Pay / Mileage',

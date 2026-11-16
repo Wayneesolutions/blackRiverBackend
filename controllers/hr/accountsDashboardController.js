@@ -347,13 +347,18 @@ export const getAccountsDashboard = async (req, res) => {
     const to = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)) : null;
     const inPeriod = (d) => (!from && !to) || (d && (!from || new Date(d) >= from) && (!to || new Date(d) <= to));
     const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    // Payables / receivables are balances: anything still open at the end of the period counts,
+    // even if the bill/invoice was dated in an earlier month (an open October bill is still owed
+    // in November - "This month" used to show $0 payables while AP had an open $500 bill).
+    const openAsOf = (d) => !to || !d || new Date(d) <= to;
 
     // Receivables: invoices not paid yet (what customers owe us)
     const periodInvoices = invoices.filter(inv => inPeriod(inv.invoiceDate || inv.createdAt));
-    const receivables = periodInvoices
+    const openInvoices = invoices.filter(inv => openAsOf(inv.invoiceDate || inv.createdAt));
+    const receivables = openInvoices
       .filter(inv => inv.status !== 'paid')
       .reduce((sum, inv) => sum + normalizeAmount(inv.amount), 0);
-    const receivablesOverdue = periodInvoices
+    const receivablesOverdue = openInvoices
       .filter(inv => inv.status !== 'paid' && inv.dueDate && new Date(inv.dueDate) < today)
       .reduce((sum, inv) => sum + normalizeAmount(inv.amount), 0);
 
@@ -361,9 +366,9 @@ export const getAccountsDashboard = async (req, res) => {
     const companyMatch = !isSuperadmin && companyId ? { company: companyId } : {};
     const openBills = await Bill.find({ ...companyMatch, status: { $in: ['unpaid', 'partial'] } }).lean();
     const billBalance = (b) => Math.max(0, (b.amount || 0) + (b.taxAmount || 0) - (b.paidAmount || 0));
-    const payables = openBills.filter(b => inPeriod(b.billDate)).reduce((s, b) => s + billBalance(b), 0);
+    const payables = openBills.filter(b => openAsOf(b.billDate)).reduce((s, b) => s + billBalance(b), 0);
     const payablesOverdue = openBills
-      .filter(b => inPeriod(b.billDate) && b.dueDate && new Date(b.dueDate) < today)
+      .filter(b => openAsOf(b.billDate) && b.dueDate && new Date(b.dueDate) < today)
       .reduce((s, b) => s + billBalance(b), 0);
 
     // Payrolls: only what was actually generated. A payroll is "paid" once Accounts marks it
@@ -404,7 +409,7 @@ export const getAccountsDashboard = async (req, res) => {
       period: { startDate: from, endDate: to },
       payables: r2(payables),
       payablesOverdue: r2(payablesOverdue),
-      payablesCount: openBills.filter(b => inPeriod(b.billDate)).length,
+      payablesCount: openBills.filter(b => openAsOf(b.billDate)).length,
       receivables: r2(receivables),
       receivablesOverdue: r2(receivablesOverdue),
       paidPayrolls: r2(paidPayrolls),

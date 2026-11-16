@@ -9,6 +9,21 @@ import { extractExpenseFromReceipt } from "../../services/openaiService.js";
 import fs from 'fs';
 
 // ✅ Update Expense
+// Optional reference fields arrive as "" from multipart forms when nothing is selected
+// (e.g. no employee). Mongoose cannot cast "" to ObjectId, so the save failed with
+// "Cast to ObjectId failed for value \"\" at path userId".
+const OPTIONAL_REF_FIELDS = ["userId", "orderId", "vehicle", "trailer", "truckId", "trailerId"];
+const dropEmptyRefs = (obj, unsetForUpdate = false) => {
+  for (const key of OPTIONAL_REF_FIELDS) {
+    const v = obj[key];
+    if (v === "" || v === "null" || v === "undefined" || v === null) {
+      delete obj[key];
+      if (unsetForUpdate && key === "userId") obj.$unset = { ...(obj.$unset || {}), userId: 1 };
+    }
+  }
+  return obj;
+};
+
 export const updateExpense = async (req, res) => {
   try {
     const { id } = req.params;
@@ -24,7 +39,7 @@ export const updateExpense = async (req, res) => {
       });
     }
     
-    let updateData = { ...req.body };
+    let updateData = dropEmptyRefs({ ...req.body }, true);
     
     // Handle categoryId if provided (for dynamic categories)
     if (req.body.categoryId !== undefined) {
@@ -292,11 +307,11 @@ export const createExpense = async (req, res) => {
       }
     }
 
-    const payload = {
+    const payload = dropEmptyRefs({
       ...req.body,
       receiptUrl: fileUrl,
       company: isSuperadmin ? req.body.company || null : companyId
-    };
+    });
 
     if(req.body.orderId){
       let orderId = req.body.orderId;
