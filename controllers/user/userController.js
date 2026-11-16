@@ -251,8 +251,10 @@ export const getEmployees = async (req, res) => {
       query.role = { $nin: excludedRoles };
     }
 
+    // Pay Rate fields are needed by Create Payroll to fill Base Salary from attendance hours
+    // (only mileRate was returned, so the form never had a rate and Base Salary stayed empty)
     const employees = await User.find(query).select(
-      "name role phone status email details.mileRate internalId company"
+      "name role phone status email details.mileRate details.payRate details.hourlyRate details.payType internalId company"
     );
 
     res.json({ success: true, data: employees });
