@@ -96,8 +96,9 @@ export const getSuperAdminDashboard = async (req, res) => {
     const totalSubscriptions = liveSubs.length;
     const activeSubscriptions = liveSubs.filter((sub) => sub.status === 'active' && statusById.get(sub._id.toString()) !== 'Cancelled').length;
     const pendingSubscriptions = liveSubs.filter((sub) => sub.status === 'pending' && statusById.get(sub._id.toString()) !== 'Cancelled').length;
-    const cancelledSubscriptions = ctx.subscriptions.filter((sub) => statusById.get(sub._id.toString()) === 'Cancelled').length;
-    const overdueSubscriptions = ctx.subscriptions.filter((sub) => statusById.get(sub._id.toString()) === 'Overdue').length;
+    // Count from liveSubs like Total does: counting deleted customers' subscriptions made Cancelled (46) larger than Total (6)
+    const cancelledSubscriptions = liveSubs.filter((sub) => statusById.get(sub._id.toString()) === 'Cancelled').length;
+    const overdueSubscriptions = liveSubs.filter((sub) => statusById.get(sub._id.toString()) === 'Overdue').length;
 
     // 3. Revenue
     const payments = paymentsOf(ctx);
