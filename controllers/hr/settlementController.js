@@ -93,9 +93,23 @@ export const getTruckWork = async (req, res) => {
     const ownerRate = Number(owner?.details?.salaryPerMile || owner?.details?.mileRate || 0);
     const ownerTeamRate = Number(owner?.details?.mileRateTeam || 0);
     const ownerEmptyRate = Number(owner?.details?.emptyMileRate || 0);
-    const rate = Number(req.query.ratePerMile) || ownerRate;
-    const emptyRate = Number(req.query.emptyRatePerMile) || ownerEmptyRate || rate;
-    const teamRate = Number(req.query.teamRatePerMile) || ownerTeamRate || rate;
+    // No rate on the owner-operator's profile: start from the rate used on this truck's
+    // last settlement, so the modal doesn't open with an empty rate, $0 gross and a
+    // negative net pay (client retest 17 Nov).
+    let lastRates = null;
+    if (!Number(req.query.ratePerMile) && !ownerRate) {
+      const last = await Settlement.findOne({ truck: truck._id, 'lineItems.0': { $exists: true } })
+        .sort({ createdAt: -1 }).select('lineItems.rate lineItems.tripType').lean();
+      if (last) {
+        const pick = (types) => Number((last.lineItems.find(l => types.includes(l.tripType) && Number(l.rate) > 0) || {}).rate) || 0;
+        lastRates = { solo: pick(['SOLO']), team: pick(['TEAM']), empty: pick(['EMPTY', 'EMPTY-T']) };
+        lastRates.solo = lastRates.solo || Number((last.lineItems.find(l => Number(l.rate) > 0) || {}).rate) || 0;
+      }
+    }
+    const rate = Number(req.query.ratePerMile) || ownerRate || lastRates?.solo || 0;
+    const emptyRate = Number(req.query.emptyRatePerMile) || ownerEmptyRate || lastRates?.empty || rate;
+    const teamRate = Number(req.query.teamRatePerMile) || ownerTeamRate || lastRates?.team || rate;
+    const rateSource = Number(req.query.ratePerMile) ? 'entered' : ownerRate ? 'profile' : lastRates?.solo ? 'lastSettlement' : 'none';
 
     const start = new Date(startDate); start.setHours(0, 0, 0, 0);
     const end = new Date(endDate); end.setHours(23, 59, 59, 999);
@@ -179,7 +193,7 @@ export const getTruckWork = async (req, res) => {
           ownership: truck.ownership,
         },
         payee: owner ? { _id: owner._id, name: owner.name, address: payeeAddress, isOwnerOperator: isOwnerOperator(owner) } : null,
-        rates: { ratePerMile: rate, teamRatePerMile: teamRate, emptyRatePerMile: emptyRate },
+        rates: { ratePerMile: rate, teamRatePerMile: teamRate, emptyRatePerMile: emptyRate, source: rateSource },
         lines,
         suggestedDeductions,
         totals: {

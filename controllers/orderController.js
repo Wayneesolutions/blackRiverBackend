@@ -3060,6 +3060,32 @@ export const updateOrder = async (req, res) => {
     }
 
     // =================================================================
+    // A delivered order with no rate gets a $0 invoice. When the rate is filled in
+    // later, carry it onto that invoice while it is still an unpaid $0 invoice
+    // (client retest 17 Nov: "order invoice shows $0").
+    // =================================================================
+    if (req.body.rate !== undefined || req.body.totalAmount !== undefined) {
+      const newAmount = Number(order.totalAmount) || Number(order.rate) || 0;
+      if (newAmount > 0) {
+        try {
+          const { Invoice } = await import("../models/hr/invoiceModel.js");
+          const inv = await Invoice.findOne({ orderId: order._id, status: { $ne: 'paid' } });
+          if (inv && !(Number(inv.amount) > 0)) {
+            inv.amount = String(newAmount);
+            inv.currency = order.currency || order.rateCurrency || inv.currency;
+            inv.serviceBreakdown = [{
+              description: `Freight Charges - Order #${orderObj.orderNumber}`,
+              unitPrice: newAmount, amount: newAmount, quantity: 1,
+            }];
+            await inv.save();
+          }
+        } catch (invErr) {
+          console.error('Could not update $0 invoice from order rate:', invErr.message);
+        }
+      }
+    }
+
+    // =================================================================
     // 🔄 PAYMENT STATUS SYNC (Order -> Invoice)
     // =================================================================
     if (req.body.accountingStatus) {
@@ -3903,7 +3929,7 @@ export const getCompletedOrdersByDriver = async (req, res) => {
       }
 
       // Convert km to miles (1 km = 0.621371 miles)
-      const distanceInMiles = distance * 0.621371;
+      const distanceInMiles = Math.round(distance * 0.621371 * 100) / 100; // rounded first so pay = shown miles x rate (matches Settlements)
 
       // Check weather conditions
       let hasSnow = false;

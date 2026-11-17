@@ -104,9 +104,11 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
     const [fleetUnits, vehicles, trailers] = await Promise.all([
       FleetUnit.find(query).select('_id internalId unitNo licensePlate odometer currentOdometer unitType purchasePrice').lean(),
       Vehicle.find(query).select('_id internalId unitNumber plateNumber odometer assetValue purchasePrice').lean(),
-      Trailer.find(query).select('_id unitNumber trailer plateNumber purchasePrice').lean(),
+      Trailer.find(query).select('_id unitNumber trailer internalId plateNumber purchasePrice').lean(),
     ]);
 
+    // "TRL-203" is normally the trailer number (`trailer`); unitNumber / internalId are often empty
+    const trailerName = (t) => t.trailer || t.unitNumber || t.internalId || t.plateNumber || t._id.toString();
     const units = new Map(); // key -> unit info
     const unitName = new Map(); // any name/number -> key
     const register = (key, name, type, odometerMiles, purchasePrice) => {
@@ -126,11 +128,13 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       [v.unitNumber, v.plateNumber].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), v._id.toString()));
     });
     trailers.forEach(t => {
-      register(t._id.toString(), t.unitNumber || t.trailer || t.plateNumber || t._id.toString(), 'Trailer', 0, t.purchasePrice);
-      [t.trailer, t.plateNumber].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), t._id.toString()));
+      register(t._id.toString(), trailerName(t), 'Trailer', 0, t.purchasePrice);
+      [t.trailer, t.unitNumber, t.internalId, t.plateNumber].forEach(n => n && unitName.set(String(n).trim().toLowerCase(), t._id.toString()));
     });
 
-    const resolveKey = (id, name, fallbackType = 'Truck') => {
+    const resolveKey = (rawId, name, fallbackType = 'Truck') => {
+      // Ids picked from the fleet units list carry a "trailer-" / "vehicle-" / "custom-" prefix
+      const id = rawId ? String(rawId._id || rawId).replace(/^(trailer|vehicle|custom)-/, '') : rawId;
       if (id && units.has(String(id))) return String(id);
       const byName = name ? unitName.get(String(name).trim().toLowerCase()) : null;
       if (byName) return byName;
@@ -220,18 +224,45 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       const [fu, ve, tr] = await Promise.all([
         FleetUnit.find({ _id: { $in: unknownIds } }).select('_id internalId unitNo licensePlate unitType purchasePrice').lean(),
         Vehicle.find({ _id: { $in: unknownIds } }).select('_id internalId unitNumber plateNumber purchasePrice assetValue').lean(),
-        Trailer.find({ _id: { $in: unknownIds } }).select('_id unitNumber trailer plateNumber purchasePrice').lean(),
+        Trailer.find({ _id: { $in: unknownIds } }).select('_id unitNumber trailer internalId plateNumber purchasePrice').lean(),
       ]);
       fu.forEach(u => register(u._id.toString(), u.unitNo || u.internalId || u.licensePlate || u._id.toString(),
         /trailer/i.test(u.unitType || '') ? 'Trailer' : 'Truck', 0, u.purchasePrice));
       ve.forEach(v => register(v._id.toString(), v.internalId || v.unitNumber || v.plateNumber || v._id.toString(), 'Truck', 0, v.purchasePrice || v.assetValue));
-      tr.forEach(t => register(t._id.toString(), t.unitNumber || t.trailer || t.plateNumber || t._id.toString(), 'Trailer', 0, t.purchasePrice));
+      tr.forEach(t => register(t._id.toString(), trailerName(t), 'Trailer', 0, t.purchasePrice));
     }
     unitExpenses.forEach(ex => {
       const key = resolveKey(ex.vehicle || ex.trailer, null, ex.trailer ? 'Trailer' : 'Truck');
       const label = ex.categoryId?.name || ex.type || 'Expenses';
       const e = add(key, 'other', Number(ex.amount) || 0, ex.date);
       if (e) e.serviceTypes[label] = (e.serviceTypes[label] || 0) + (Number(ex.amount) || 0);
+    });
+
+    // Any unit still named by its raw id was first seen in a repair / service / parts
+    // record whose truck or trailer is outside the company-scoped lists (or the expense
+    // step skipped it because that id was already registered). Look them all up now.
+    const rawNamed = [...spend.keys()].filter(k => units.get(k)?.name === k && mongoose.Types.ObjectId.isValid(k));
+    if (rawNamed.length) {
+      const [fu, ve, tr] = await Promise.all([
+        FleetUnit.find({ _id: { $in: rawNamed } }).select('_id internalId unitNo licensePlate unitType purchasePrice').lean(),
+        Vehicle.find({ _id: { $in: rawNamed } }).select('_id internalId unitNumber plateNumber purchasePrice assetValue').lean(),
+        Trailer.find({ _id: { $in: rawNamed } }).select('_id unitNumber trailer internalId plateNumber purchasePrice').lean(),
+      ]);
+      const rename = (id, name, type, price) => {
+        const u = units.get(String(id));
+        if (!u || !name) return;
+        u.name = String(name);
+        u.type = type;
+        if (!u.purchasePrice) u.purchasePrice = Number(price) || 0;
+      };
+      fu.forEach(u => rename(u._id, u.unitNo || u.internalId || u.licensePlate, /trailer/i.test(u.unitType || '') ? 'Trailer' : 'Truck', u.purchasePrice));
+      ve.forEach(v => rename(v._id, v.internalId || v.unitNumber || v.plateNumber, 'Truck', v.purchasePrice || v.assetValue));
+      tr.forEach(t => rename(t._id, trailerName(t), 'Trailer', t.purchasePrice));
+    }
+    // A unit that no longer exists at all: say so instead of printing a 24-character id
+    rawNamed.forEach(k => {
+      const u = units.get(k);
+      if (u && u.name === k) u.name = `${u.type} (deleted) …${k.slice(-4)}`;
     });
 
     const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;

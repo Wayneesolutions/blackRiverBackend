@@ -5,6 +5,126 @@ import { CompanySettings } from "../../models/driver/companysettingsModel.js";
 import { DeductionAddition } from "../../models/hr/settlementModel.js";
 
 // ✅ Get all paystubs
+
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+// Gross Payroll lists Paystub documents, but a paystub was only written inside a
+// try/catch while the payroll was being created, so any error there (or a payroll made
+// by another screen) left a payroll with no paystub: 10 payrolls, 3 paystubs (client
+// retest 17 Nov). Build the missing ones from the stored payroll.
+export const buildPaystubFromPayroll = async (payroll) => {
+  const { User } = await import("../../models/driver/userModel.js");
+  const user = await User.findById(payroll.userId).select('name email role internalId city state country companyFlag details').lean();
+  if (!user) return null;
+  const isDriver = user.role === 'driver';
+  const companyFlag = user.details?.companyFlag ?? user.companyFlag ?? false;
+  const workType = !isDriver ? 'Employee' : (companyFlag ? 'Owner-Operator' : 'Driver');
+  const country = payroll.country === 'Canada' ? 'Canada' : 'USA';
+
+  const additionItems = payroll.additionItems || [];
+  const deductionItems = payroll.deductionItems || [];
+  const additionsTotal = additionItems.reduce((s, a) => s + (Number(a.amount) || 0), 0);
+  const base = Number(payroll.baseSalary) || 0;
+  const extra = Number(payroll.bonus) || 0; // stored bonus already includes itemised additions
+  const pureBonus = additionItems.length ? Math.max(0, extra - additionsTotal) : extra;
+  const tripPay = (payroll.orders || []).length > 0 || (payroll.trips || []).length > 0;
+
+  const earningsBreakdown = [];
+  if (base > 0) {
+    const hourly = !isDriver && Number(payroll.hourlyRate) > 0 && Number(payroll.totalHours) > 0;
+    earningsBreakdown.push({
+      type: hourly ? 'Regular Pay' : (tripPay ? 'Trip Pay' : 'Basic Pay'),
+      units: hourly ? `${Number(payroll.totalHours).toFixed(2)} Hours` : (tripPay ? `${Number(payroll.totalMiles || 0).toFixed(2)} Miles` : (isDriver ? 'Trips' : 'Salary')),
+      rate: hourly ? Number(payroll.hourlyRate) : (tripPay ? Number(payroll.ratePerMile || 0) : base),
+      amount: base,
+    });
+  }
+  if (pureBonus > 0) earningsBreakdown.push({ type: 'Bonus', units: '', rate: 0, amount: r2(pureBonus) });
+  additionItems.forEach(a => earningsBreakdown.push({ type: a.memo, units: '', rate: 0, amount: Number(a.amount) || 0 }));
+
+  const taxesCA = {
+    federalIncomeTax: Number(payroll.federalIncomeTaxCA) || 0, provincialIncomeTax: Number(payroll.provincialIncomeTaxCA) || 0,
+    cpp: Number(payroll.cpp) || 0, ei: Number(payroll.ei) || 0, provincialHealthTax: Number(payroll.provincialHealthTaxCA) || 0,
+  };
+  taxesCA.totalTaxes = r2(Object.values(taxesCA).reduce((s, v) => s + v, 0));
+  const taxesUS = {
+    federalIncomeTax: Number(payroll.federalIncomeTaxUS) || 0, stateIncomeTax: Number(payroll.stateIncomeTaxUS) || 0,
+    socialSecurityTax: Number(payroll.socialSecurityTax) || 0, medicareTax: Number(payroll.medicareTax) || 0,
+    stateDisabilityInsurance: Number(payroll.stateDisabilityInsurance) || 0, localTax: Number(payroll.localTax) || 0,
+  };
+  taxesUS.totalTaxes = r2(Object.values(taxesUS).reduce((s, v) => s + v, 0));
+  const totalTaxes = country === 'Canada' ? taxesCA.totalTaxes : taxesUS.totalTaxes;
+
+  const deduct = Number(payroll.deductions) || 0;
+  const deductionsBreakdown = deductionItems.length
+    ? deductionItems.map(d => ({ type: d.memo, amount: Number(d.amount) || 0 }))
+    : (deduct > 0 ? [{ type: 'Other Deductions', amount: deduct }] : []);
+  const grossPay = r2(base + extra);
+
+  const company = payroll.company ? await CompanySettings.findById(payroll.company).lean() : null;
+  return new Paystub({
+    payrollId: payroll._id,
+    userId: payroll.userId,
+    employeeName: user.name || 'Unknown',
+    employeeId: user.internalId || '',
+    employeeEmail: user.email || '',
+    employeeRole: user.role || '',
+    employeeAddress: [user.city, user.state, user.country].filter(Boolean).join(', '),
+    workType,
+    payPeriod: {
+      startDate: payroll.startDate || payroll.createdAt || new Date(),
+      endDate: payroll.endDate || payroll.createdAt || new Date(),
+      payDate: payroll.payDate || payroll.createdAt || new Date(),
+    },
+    paystubId: `PS-${payroll._id.toString().slice(-8).toUpperCase()}-${new Date(payroll.payDate || payroll.createdAt || Date.now()).getFullYear()}`,
+    earnings: {
+      baseSalary: base, bonus: extra, mileageEarnings: tripPay ? base : 0, tripPay: tripPay ? base : 0,
+      regularHours: Number(payroll.regularHours) || 0, hourlyRate: Number(payroll.hourlyRate) || 0,
+      totalEarnings: grossPay, earningsBreakdown,
+    },
+    deductions: { totalDeductions: r2(deduct + totalTaxes), otherDeductions: deduct, deductionsBreakdown },
+    taxesCA, taxesUS,
+    summary: { grossPay, totalDeductions: r2(deduct + totalTaxes), totalTaxes, netPay: r2(payroll.totalSalary) },
+    country,
+    driverInfo: isDriver ? {
+      totalMiles: Number(payroll.totalMiles) || 0, ratePerMile: Number(payroll.ratePerMile) || 0,
+      tripsCount: (payroll.trips || []).length + (payroll.orders || []).length, loadsCount: (payroll.loads || []).length,
+    } : undefined,
+    additions: additionItems.map(a => ({ loadDate: a.date, memo: a.memo, amount: Number(a.amount) || 0, per: a.per, totalCAD: Number(a.amount) || 0 })),
+    deductionItems: deductionItems.map(d => ({ loadDate: d.date, memo: d.memo, amount: Number(d.amount) || 0, per: d.per, totalCAD: Number(d.amount) || 0 })),
+    hoursWorked: {
+      totalHours: Number(payroll.totalHours) || 0, regularHours: Number(payroll.regularHours) || 0,
+      overtimeHours: Number(payroll.overtimeHours) || 0, hourlyRate: Number(payroll.hourlyRate) || 0,
+    },
+    company: payroll.company,
+    companyDetails: company ? {
+      companyName: company.companyName, companyAddress: company.address,
+      companyPhone: company.phone || company.companyPhone, companyEmail: company.email || company.companyEmail,
+      gstNumber: company.taxNumber || company.gstNumber,
+    } : undefined,
+    status: 'issued',
+  });
+};
+
+export const backfillMissingPaystubs = async (payrollFilter) => {
+  const payrolls = await Payroll.find(payrollFilter).select('_id').lean();
+  if (!payrolls.length) return 0;
+  const have = new Set((await Paystub.find({ payrollId: { $in: payrolls.map(p => p._id) } }).select('payrollId').lean())
+    .map(p => String(p.payrollId)));
+  const missing = payrolls.filter(p => !have.has(String(p._id)));
+  let created = 0;
+  for (const { _id } of missing) {
+    try {
+      const payroll = await Payroll.findById(_id).lean();
+      const stub = payroll && await buildPaystubFromPayroll(payroll);
+      if (stub) { await stub.save(); created += 1; }
+    } catch (err) {
+      if (err?.code !== 11000) console.error(`Could not build paystub for payroll ${_id}:`, err.message);
+    }
+  }
+  return created;
+};
+
 export const getPaystubs = async (req, res) => {
   try {
     const companyId = getUserCompanyId(req.user);
@@ -47,6 +167,17 @@ export const getPaystubs = async (req, res) => {
       if (endDate) {
         filter['payPeriod.payDate'].$lte = new Date(endDate);
       }
+    }
+
+    // Payrolls that never got a paystub still belong in Gross Payroll
+    const payrollFilter = {};
+    if (!isSuperadmin) payrollFilter.company = companyId;
+    if (userId) payrollFilter.userId = userId;
+    if (filter['payPeriod.payDate']) payrollFilter.payDate = filter['payPeriod.payDate'];
+    try {
+      await backfillMissingPaystubs(payrollFilter);
+    } catch (err) {
+      console.error('Paystub backfill failed:', err.message);
     }
 
     // Get paystubs
