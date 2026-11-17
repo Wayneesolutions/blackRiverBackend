@@ -254,7 +254,8 @@ export const generateAIDriverPayroll = async (req, res) => {
         distance = 0;
       }
 
-      const distanceInMiles = distance * 0.621371;
+      // Round miles first so pay = shown miles x rate (same as Settlements; was 3 cents off)
+      const distanceInMiles = Math.round(distance * 0.621371 * 100) / 100;
 
       // Determine if this driver is primary or co-driver
       const isPrimaryDriver = order.driver && order.driver._id?.toString() === driverId;
@@ -1088,7 +1089,8 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
             distance = 0;
           }
 
-          const distanceInMiles = distance * 0.621371;
+          // Round miles first so pay = shown miles x rate (same as Settlements; was 3 cents off)
+          const distanceInMiles = Math.round(distance * 0.621371 * 100) / 100;
 
           // Determine if this driver is primary or co-driver
           const isPrimaryDriver = order.driver && order.driver._id?.toString() === driverId.toString();
@@ -1316,7 +1318,9 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
         // Calculate taxes based on gross salary (base earnings + bonus + additions)
         // Gross Earnings = Trip Earnings + Bonus + Additions (same as manual payroll)
         // Note: bonus and additions are separate (bonus is AI recommended, additions come from driver profile)
-        const grossSalary = totalEarnings + aiRecommendedBonus + totalAdditions;
+        // The AI bonus is only a suggestion (client): it is returned as recommendedBonus and
+        // the bonus starts at 0 until the accountant presses "Use suggestion".
+        const grossSalary = totalEarnings + totalAdditions;
         const country = 'USA'; // Default, can be made configurable per driver
         
         // Calculate taxes (simplified calculations - can be enhanced with actual tax brackets)
@@ -1383,7 +1387,8 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
           driverEmail: driver.email || '',
           driverPhone: driver.phone || '',
           baseSalary: totalEarnings, // Trip earnings only
-          bonus: aiRecommendedBonus, // AI recommended bonus only (additions are separate)
+          bonus: 0, // AI bonus is a suggestion only (see recommendedBonus)
+          recommendedBonus: aiRecommendedBonus,
           deductions: finalDeductions, // Calculated deductions from driver profile (same as manual payroll)
           totalSalary: finalTotalSalary,
           totalTrips,

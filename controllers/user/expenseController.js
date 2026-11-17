@@ -24,6 +24,20 @@ const dropEmptyRefs = (obj, unsetForUpdate = false) => {
   return obj;
 };
 
+
+// A Trailer document shaped like a fleet unit for the expense screens. "TRL-203" is
+// usually stored in `trailer` (the trailer number), which the old mapping skipped.
+const trailerToUnit = (t) => ({
+  _id: t._id,
+  unitNo: t.trailer || t.unitNumber || t.internalId || t.plateNumber,
+  unitNumber: t.unitNumber || t.trailer,
+  internalId: t.internalId,
+  licensePlate: t.plateNumber,
+  plateNumber: t.plateNumber,
+  make: t.make,
+  model: t.model,
+});
+
 export const updateExpense = async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,7 +80,10 @@ export const updateExpense = async (req, res) => {
         if (!isSuperadmin && companyId) {
           vehicleQuery.company = companyId;
         }
-        const vehicle = await FleetUnit.findOne(vehicleQuery);
+        const { Vehicle } = await import("../../models/driver/vehicleModel.js");
+        // Trucks can be Fleet Maintenance units or Vehicles; an update used to drop a
+        // Vehicle silently because only FleetUnit was checked.
+        const vehicle = (await FleetUnit.findOne(vehicleQuery)) || (await Vehicle.findOne({ _id: vehicleId }));
         if (vehicle) {
           updateData.vehicle = vehicleId;
         } else {
@@ -87,7 +104,10 @@ export const updateExpense = async (req, res) => {
         if (!isSuperadmin && companyId) {
           vehicleQuery.company = companyId;
         }
-        const vehicle = await FleetUnit.findOne(vehicleQuery);
+        const { Vehicle } = await import("../../models/driver/vehicleModel.js");
+        // Trucks can be Fleet Maintenance units or Vehicles; an update used to drop a
+        // Vehicle silently because only FleetUnit was checked.
+        const vehicle = (await FleetUnit.findOne(vehicleQuery)) || (await Vehicle.findOne({ _id: vehicleId }));
         if (vehicle) {
           updateData.vehicle = vehicleId;
         } else {
@@ -112,7 +132,8 @@ export const updateExpense = async (req, res) => {
         if (!isSuperadmin && companyId) {
           trailerQuery.company = companyId;
         }
-        const trailer = await FleetUnit.findOne(trailerQuery);
+        const { Trailer } = await import("../../models/driver/trailerModel.js");
+        const trailer = (await FleetUnit.findOne(trailerQuery)) || (await Trailer.findOne({ _id: trailerId }));
         if (trailer) {
           updateData.trailer = trailerId;
         } else {
@@ -133,7 +154,8 @@ export const updateExpense = async (req, res) => {
         if (!isSuperadmin && companyId) {
           trailerQuery.company = companyId;
         }
-        const trailer = await FleetUnit.findOne(trailerQuery);
+        const { Trailer } = await import("../../models/driver/trailerModel.js");
+        const trailer = (await FleetUnit.findOne(trailerQuery)) || (await Trailer.findOne({ _id: trailerId }));
         if (trailer) {
           updateData.trailer = trailerId;
         } else {
@@ -178,6 +200,10 @@ export const updateExpense = async (req, res) => {
       return res.status(404).json({ success: false, message: "Expense not found" });
     }
 
+    // populate() sets the field to null when the id is a Vehicle / Trailer rather than a
+    // FleetUnit, so keep the raw ids to look those up below.
+    const rawVehicleId = updatedExpense.vehicle ? String(updatedExpense.vehicle._id || updatedExpense.vehicle) : null;
+    const rawTrailerId = updatedExpense.trailer ? String(updatedExpense.trailer._id || updatedExpense.trailer) : null;
     // Try to populate vehicle and trailer from FleetUnit
     try {
       await updatedExpense.populate("vehicle", "unitNo unitType makeModel make model licensePlate unitType");
@@ -188,6 +214,8 @@ export const updateExpense = async (req, res) => {
 
     // Map vehicle and trailer to truckId and trailerId for frontend compatibility
     const expenseObj = updatedExpense.toObject();
+    if (rawVehicleId && !(expenseObj.vehicle && expenseObj.vehicle._id)) expenseObj.vehicle = rawVehicleId;
+    if (rawTrailerId && !(expenseObj.trailer && expenseObj.trailer._id)) expenseObj.trailer = rawTrailerId;
     
     // If vehicle/trailer weren't populated (might be from Vehicle/Trailer models), fetch them manually
     if (expenseObj.vehicle && typeof expenseObj.vehicle === 'string') {
@@ -214,19 +242,8 @@ export const updateExpense = async (req, res) => {
     if (expenseObj.trailer && typeof expenseObj.trailer === 'string') {
       try {
         const { Trailer } = await import("../../models/driver/trailerModel.js");
-        const trailer = await Trailer.findById(expenseObj.trailer).select("unitNumber internalId plateNumber make model");
-        if (trailer) {
-          expenseObj.trailer = {
-            _id: trailer._id,
-            unitNo: trailer.unitNumber || trailer.internalId,
-            unitNumber: trailer.unitNumber,
-            internalId: trailer.internalId,
-            licensePlate: trailer.plateNumber,
-            plateNumber: trailer.plateNumber,
-            make: trailer.make,
-            model: trailer.model
-          };
-        }
+        const trailer = await Trailer.findById(expenseObj.trailer).select("unitNumber trailer internalId plateNumber make model").lean();
+        if (trailer) expenseObj.trailer = trailerToUnit(trailer);
       } catch (err) {
         console.warn('Could not populate trailer from Trailer model:', err.message);
       }
@@ -517,6 +534,10 @@ export const createExpense = async (req, res) => {
     await expense.populate("categoryId", "name status");
     await expense.populate("typeId", "name status categoryId");
     
+    // populate() sets the field to null when the id is a Vehicle / Trailer rather than a
+    // FleetUnit, so keep the raw ids to look those up below.
+    const rawVehicleId = expense.vehicle ? String(expense.vehicle._id || expense.vehicle) : null;
+    const rawTrailerId = expense.trailer ? String(expense.trailer._id || expense.trailer) : null;
     // Try to populate vehicle and trailer from FleetUnit first
     try {
       await expense.populate("vehicle", "unitNo unitType makeModel make model licensePlate unitType");
@@ -527,6 +548,8 @@ export const createExpense = async (req, res) => {
     
     // Map vehicle and trailer to truckId and trailerId for frontend compatibility
     const expenseObj = expense.toObject();
+    if (rawVehicleId && !(expenseObj.vehicle && expenseObj.vehicle._id)) expenseObj.vehicle = rawVehicleId;
+    if (rawTrailerId && !(expenseObj.trailer && expenseObj.trailer._id)) expenseObj.trailer = rawTrailerId;
     
     // If vehicle/trailer weren't populated (might be from Vehicle/Trailer models), fetch them manually
     if (expenseObj.vehicle && typeof expenseObj.vehicle === 'string') {
@@ -553,19 +576,8 @@ export const createExpense = async (req, res) => {
     if (expenseObj.trailer && typeof expenseObj.trailer === 'string') {
       try {
         const { Trailer } = await import("../../models/driver/trailerModel.js");
-        const trailer = await Trailer.findById(expenseObj.trailer).select("unitNumber internalId plateNumber make model");
-        if (trailer) {
-          expenseObj.trailer = {
-            _id: trailer._id,
-            unitNo: trailer.unitNumber || trailer.internalId,
-            unitNumber: trailer.unitNumber,
-            internalId: trailer.internalId,
-            licensePlate: trailer.plateNumber,
-            plateNumber: trailer.plateNumber,
-            make: trailer.make,
-            model: trailer.model
-          };
-        }
+        const trailer = await Trailer.findById(expenseObj.trailer).select("unitNumber trailer internalId plateNumber make model").lean();
+        if (trailer) expenseObj.trailer = trailerToUnit(trailer);
       } catch (err) {
         console.warn('Could not populate trailer from Trailer model:', err.message);
       }
@@ -613,122 +625,41 @@ export const getExpenses = async (req, res) => {
     console.log('=== Fetched expenses ===');
     console.log('Total expenses:', expenses.length);
     
-    // Map vehicle and trailer to truckId and trailerId for frontend compatibility
-    // Also handle cases where vehicle/trailer are from Vehicle/Trailer models
+    // Look every truck / trailer up in one batch per model. The old code ran 2-4
+    // queries per expense plus several console.logs each, so the list got slower with
+    // every expense and a freshly saved one could take a while to show up.
     const { Vehicle } = await import("../../models/driver/vehicleModel.js");
     const { Trailer } = await import("../../models/driver/trailerModel.js");
     const { FleetUnit } = await import("../../models/fleet/fleetUnitModel.js");
-    
-    const expensesWithMappedFields = await Promise.all(expenses.map(async (exp) => {
-      // Get the raw document to preserve vehicle/trailer IDs before toObject()
-      const vehicleIdRaw = exp.vehicle;
-      const trailerIdRaw = exp.trailer;
-      
+
+    const ids = [...new Set(expenses.flatMap(e => [e.vehicle, e.trailer]).filter(Boolean).map(String))];
+    const [fleetUnits, vehicles, trailers] = ids.length ? await Promise.all([
+      FleetUnit.find({ _id: { $in: ids } }).select("unitNo unitType makeModel make model licensePlate").lean(),
+      Vehicle.find({ _id: { $in: ids } }).select("unitNumber internalId plateNumber make model").lean(),
+      Trailer.find({ _id: { $in: ids } }).select("unitNumber trailer internalId plateNumber make model").lean(),
+    ]) : [[], [], []];
+    const fleetById = new Map(fleetUnits.map(u => [String(u._id), u]));
+    const vehicleById = new Map(vehicles.map(v => [String(v._id), {
+      _id: v._id, unitNo: v.unitNumber || v.internalId || v.plateNumber, unitNumber: v.unitNumber,
+      internalId: v.internalId, licensePlate: v.plateNumber, plateNumber: v.plateNumber, make: v.make, model: v.model,
+    }]));
+    const trailerById = new Map(trailers.map(t => [String(t._id), trailerToUnit(t)]));
+
+    const expensesWithMappedFields = expenses.map((exp) => {
       const expObj = exp.toObject();
-      
-      // Extract vehicle and trailer IDs from the raw document
-      // These are ObjectId instances in the Mongoose document
-      let vehicleId = null;
-      let trailerId = null;
-      
-      if (vehicleIdRaw) {
-        vehicleId = vehicleIdRaw.toString ? vehicleIdRaw.toString() : String(vehicleIdRaw);
-      }
-      
-      if (trailerIdRaw) {
-        trailerId = trailerIdRaw.toString ? trailerIdRaw.toString() : String(trailerIdRaw);
-      }
-      
-      console.log(`Processing expense ${expObj._id}: vehicleId=${vehicleId}, trailerId=${trailerId}, vehicleIdRaw=${vehicleIdRaw}, trailerIdRaw=${trailerIdRaw}`);
-      
-      // Handle vehicle - if ID exists, fetch it manually
+      const vehicleId = exp.vehicle ? String(exp.vehicle) : null;
+      const trailerId = exp.trailer ? String(exp.trailer) : null;
       if (vehicleId) {
-        try {
-          // First try FleetUnit
-          const { FleetUnit } = await import("../../models/fleet/fleetUnitModel.js");
-          let vehicle = await FleetUnit.findById(vehicleId).select("unitNo unitType makeModel make model licensePlate unitType");
-          
-          // If not found in FleetUnit, try Vehicle model
-          if (!vehicle) {
-            vehicle = await Vehicle.findById(vehicleId).select("unitNumber internalId plateNumber make model");
-            if (vehicle) {
-              expObj.vehicle = {
-                _id: vehicle._id,
-                unitNo: vehicle.unitNumber || vehicle.internalId,
-                unitNumber: vehicle.unitNumber,
-                internalId: vehicle.internalId,
-                licensePlate: vehicle.plateNumber,
-                plateNumber: vehicle.plateNumber,
-                make: vehicle.make,
-                model: vehicle.model
-              };
-            }
-          } else {
-            expObj.vehicle = vehicle.toObject ? vehicle.toObject() : vehicle;
-          }
-        } catch (err) {
-          console.warn(`Could not populate vehicle ${vehicleId}:`, err.message);
-        }
-      }
-      
-      // Handle trailer - if ID exists, fetch it manually (populate might have failed)
-      if (trailerId) {
-        try {
-          // First try FleetUnit
-          const { FleetUnit } = await import("../../models/fleet/fleetUnitModel.js");
-          let trailer = await FleetUnit.findById(trailerId).select("unitNo unitType makeModel make model licensePlate unitType");
-          
-          // If not found in FleetUnit, try Trailer model
-          if (!trailer) {
-            trailer = await Trailer.findById(trailerId).select("unitNumber internalId plateNumber make model");
-            if (trailer) {
-              expObj.trailer = {
-                _id: trailer._id,
-                unitNo: trailer.unitNumber || trailer.internalId,
-                unitNumber: trailer.unitNumber,
-                internalId: trailer.internalId,
-                licensePlate: trailer.plateNumber,
-                plateNumber: trailer.plateNumber,
-                make: trailer.make,
-                model: trailer.model
-              };
-            }
-          } else {
-            expObj.trailer = trailer.toObject ? trailer.toObject() : trailer;
-          }
-        } catch (err) {
-          console.warn(`Could not populate trailer ${trailerId}:`, err.message);
-        }
-      }
-      
-      // Map to truckId and trailerId for frontend
-      if (expObj.vehicle) {
-        expObj.truckId = typeof expObj.vehicle === 'object' && expObj.vehicle._id ? expObj.vehicle._id : (typeof expObj.vehicle === 'string' ? expObj.vehicle : vehicleId);
-      } else if (vehicleId) {
+        expObj.vehicle = fleetById.get(vehicleId) || vehicleById.get(vehicleId) || expObj.vehicle;
         expObj.truckId = vehicleId;
       }
-      if (expObj.trailer) {
-        expObj.trailerId = typeof expObj.trailer === 'object' && expObj.trailer._id ? expObj.trailer._id : (typeof expObj.trailer === 'string' ? expObj.trailer : trailerId);
-      } else if (trailerId) {
+      if (trailerId) {
+        expObj.trailer = fleetById.get(trailerId) || trailerById.get(trailerId) || expObj.trailer;
         expObj.trailerId = trailerId;
       }
-      
       return expObj;
-    }));
-    
-    expensesWithMappedFields.forEach((exp, idx) => {
-      console.log(`Expense ${idx + 1}:`, {
-        _id: exp._id,
-        categoryId: exp.categoryId ? (typeof exp.categoryId === 'object' ? exp.categoryId._id : exp.categoryId) : null,
-        category: exp.categoryId && typeof exp.categoryId === 'object' ? { _id: exp.categoryId._id, name: exp.categoryId.name } : null,
-        typeId: exp.typeId ? (typeof exp.typeId === 'object' ? exp.typeId._id : exp.typeId) : null,
-        type: exp.type,
-        amount: exp.amount,
-        vehicle: exp.vehicle ? { _id: exp.vehicle._id, unitNo: exp.vehicle.unitNo, unitType: exp.vehicle.unitType } : null,
-        trailer: exp.trailer ? { _id: exp.trailer._id, unitNo: exp.trailer.unitNo, unitType: exp.trailer.unitType } : null
-      });
     });
-    
+
     res.json({ success: true,message:'All expenses', data:expensesWithMappedFields });
   } catch (err) {
     res.status(500).json({success:false,message:err.message });
