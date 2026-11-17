@@ -218,7 +218,7 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
     // (e.g. trailer saved without a company). Look those up by id so the report shows
     // "TRL-203" instead of the raw Mongo id.
     const unknownIds = [...new Set(unitExpenses
-      .map(ex => String(ex.vehicle || ex.trailer || ''))
+      .flatMap(ex => [ex.vehicle, ex.trailer].filter(Boolean).map(String))
       .filter(id => id && !units.has(id) && mongoose.Types.ObjectId.isValid(id)))];
     if (unknownIds.length) {
       const [fu, ve, tr] = await Promise.all([
@@ -232,10 +232,18 @@ export const getMaintenanceExpenseSummary = async (req, res) => {
       tr.forEach(t => register(t._id.toString(), trailerName(t), 'Trailer', 0, t.purchasePrice));
     }
     unitExpenses.forEach(ex => {
-      const key = resolveKey(ex.vehicle || ex.trailer, null, ex.trailer ? 'Trailer' : 'Truck');
       const label = ex.categoryId?.name || ex.type || 'Expenses';
-      const e = add(key, 'other', Number(ex.amount) || 0, ex.date);
-      if (e) e.serviceTypes[label] = (e.serviceTypes[label] || 0) + (Number(ex.amount) || 0);
+      const amt = Number(ex.amount) || 0;
+      // When an expense links both a truck and a trailer, credit both units.
+      const targets = [
+        ex.vehicle ? { id: ex.vehicle, type: 'Truck' } : null,
+        ex.trailer ? { id: ex.trailer, type: 'Trailer' } : null,
+      ].filter(Boolean);
+      targets.forEach(({ id, type }) => {
+        const key = resolveKey(id, null, type);
+        const e = add(key, 'other', amt, ex.date);
+        if (e) e.serviceTypes[label] = (e.serviceTypes[label] || 0) + amt;
+      });
     });
 
     // Any unit still named by its raw id was first seen in a repair / service / parts

@@ -794,11 +794,18 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
             const biWeeks = Math.ceil((endDateObj.getTime() - Math.max(startDateObj.getTime(), (addStartDate || startDateObj).getTime())) / (14 * 24 * 60 * 60 * 1000));
             amount = amount * Math.max(1, biWeeks);
           } else if (addition.recurrence === 'Monthly') {
-            const months = Math.ceil((endDateObj.getTime() - Math.max(startDateObj.getTime(), (addStartDate || startDateObj).getTime())) / (30 * 24 * 60 * 60 * 1000));
-            amount = amount * Math.max(1, months);
+            const effStart = addStartDate && addStartDate > startDateObj ? addStartDate : startDateObj;
+            const effEnd = addEndDate && addEndDate < endDateObj ? addEndDate : endDateObj;
+            let monthsCount = 0;
+            for (let y = effStart.getFullYear(); y <= effEnd.getFullYear(); y++) {
+              const mStart = y === effStart.getFullYear() ? effStart.getMonth() : 0;
+              const mEnd = y === effEnd.getFullYear() ? effEnd.getMonth() : 11;
+              monthsCount += mEnd - mStart + 1;
+            }
+            amount = amount * Math.max(1, monthsCount);
           }
           // One-time, Quarterly, Yearly are just the amount itself
-          
+
           totalAdditions += amount;
           
           // Store addition details for frontend display
@@ -835,11 +842,20 @@ export const bulkAnalyzeAIDriverPayrolls = async (req, res) => {
             const biWeeks = Math.ceil((endDateObj.getTime() - Math.max(startDateObj.getTime(), (dedStartDate || startDateObj).getTime())) / (14 * 24 * 60 * 60 * 1000));
             amount = amount * Math.max(1, biWeeks);
           } else if (deduction.recurrence === 'Monthly') {
-            const months = Math.ceil((endDateObj.getTime() - Math.max(startDateObj.getTime(), (dedStartDate || startDateObj).getTime())) / (30 * 24 * 60 * 60 * 1000));
-            amount = amount * Math.max(1, months);
+            // Count calendar months the payroll period touches — same logic as the frontend
+            // calculateAdditionsDeductions() so single-form and bulk-AI always match.
+            const effStart = dedStartDate && dedStartDate > startDateObj ? dedStartDate : startDateObj;
+            const effEnd = dedEndDate && dedEndDate < endDateObj ? dedEndDate : endDateObj;
+            let monthsCount = 0;
+            for (let y = effStart.getFullYear(); y <= effEnd.getFullYear(); y++) {
+              const mStart = y === effStart.getFullYear() ? effStart.getMonth() : 0;
+              const mEnd = y === effEnd.getFullYear() ? effEnd.getMonth() : 11;
+              monthsCount += mEnd - mStart + 1;
+            }
+            amount = amount * Math.max(1, monthsCount);
           }
           // One-time, Quarterly, Yearly are just the amount itself
-          
+
           totalDeductions += amount;
           
           // Store deduction details for frontend display
