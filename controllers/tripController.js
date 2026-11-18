@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
-import { canMarkCompleted } from '../utils/orderStatusPermissions.js';
 import axios from "axios";
 import Trip from "../models/tripModel.js";
 import Order from "../models/orderModel.js";
+import { ensureOrderInvoice } from "../services/orderInvoiceService.js";
 import Load from "../models/loadModel.js";
 import { User } from "../models/driver/userModel.js";
 import { FleetUnit } from "../models/fleet/fleetUnitModel.js";
@@ -21,8 +21,10 @@ import { sendLoadAssignmentEmail, sendLoadCancellationEmail } from "../services/
 import { sendPushToDriver } from "../services/pushNotificationService.js";
 import ActivityLog from "../models/activitylogModel.js";
 
-const orderStatusAfterTripFinish = (user) =>
-  (canMarkCompleted(user) && !['driver', 'dispatcher'].includes(user?.role)) ? 'completed' : 'delivered';
+// Finishing a trip never completes its orders: Dispatch's finish = Delivered, and only Accounts
+// marks Completed (client request, Nov 2026). This applies to admins as well, so the Accounts
+// step is not skipped.
+const orderStatusAfterTripFinish = () => 'delivered';
 
 // Helper function to generate signed URL for S3 images
 const generateSignedUrl = async (url) => {
@@ -2553,7 +2555,7 @@ export const completeTrip = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Trip completed successfully. Order statuses updated to 'completed'.",
+      message: "Trip completed successfully. Orders marked as Delivered; Accounts marks them Completed.",
       data: trip
     });
     }
@@ -2591,6 +2593,9 @@ export const completeTrip = async (req, res) => {
       : orderStatusAfterTripFinish(req.user);
     order.actualEndDate = new Date();
     await order.save();
+    if (order.status === 'delivered') {
+      await ensureOrderInvoice(order);
+    }
 
     // Populate order for response
     await order.populate([
@@ -2612,7 +2617,8 @@ export const completeTrip = async (req, res) => {
       truck: order.truck,
       trailer: order.trailer,
       orders: [order._id],
-      status: 'completed',
+      // Report the order's real status (pending_review / delivered), not 'completed'
+      status: order.status,
       plannedStartDate: order.pickupDate || null,
       plannedEndDate: order.deliveryDate || null,
       actualStartDate: order.actualStartDate || null,
@@ -2630,7 +2636,9 @@ export const completeTrip = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Trip/Order completed successfully. Status updated to 'completed'.",
+      message: order.status === 'pending_review'
+        ? 'Trip finished and sent to Dispatch for document approval.'
+        : "Trip finished. Order marked as Delivered; Accounts marks it Completed.",
       data: tripLikeResponse
     });
   } catch (error) {

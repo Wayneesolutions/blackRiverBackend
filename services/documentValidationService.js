@@ -936,6 +936,11 @@ export const validateDocuments = async (documents, context = 'order', orderOrTri
           }
         }
 
+        // Safety net for BOLs (Nov 2026): an unsigned BOL, or one dated today that the model wrongly
+        // calls "future", must not block order creation. If those are the only problems, keep them
+        // as warnings and treat the BOL as valid. A wrong document type still fails.
+        downgradeSoftBolIssues(validationResult, docType);
+
         // Process validation results
         if (validationResult.valid === false) {
           validationResults.valid = false;
@@ -1078,10 +1083,56 @@ export const validateDocuments = async (documents, context = 'order', orderOrTri
 /**
  * Build validation prompt based on document type and context
  */
+// Issues that must not fail a BOL on their own: missing signatures, and a "future" date that is
+// not actually after today.
+const SIGNATURE_ISSUE = /\bsign(ed|ature|atures)?\b|unsigned/i;
+const FUTURE_DATE_ISSUE = /future/i;
+
+const isDateAfterToday = (value) => {
+  if (!value) return false;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return false;
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  return d > endOfToday;
+};
+
+export const downgradeSoftBolIssues = (validationResult, docType) => {
+  if (!validationResult || validationResult.valid !== false) return validationResult;
+  const t = String(docType || '').toLowerCase();
+  if (!(t === 'bol' || t.includes('bill of lading'))) return validationResult;
+  if (validationResult.documentTypeMatch === false) return validationResult;
+
+  const issueDate = validationResult.extractedInfo?.issueDate;
+  const isSoft = (text) => {
+    const msg = String(text || '');
+    if (SIGNATURE_ISSUE.test(msg)) return true;
+    // Only forgive "future date" when the date we can read is not really after today
+    if (FUTURE_DATE_ISSUE.test(msg) && !isDateAfterToday(issueDate)) return true;
+    return false;
+  };
+
+  const issues = Array.isArray(validationResult.issues) ? validationResult.issues : [];
+  const hardIssues = issues.filter((i) => !isSoft(i));
+  const reasonIsSoft = !validationResult.reason || isSoft(validationResult.reason);
+  if (hardIssues.length === 0 && reasonIsSoft && (issues.length > 0 || validationResult.reason)) {
+    const soft = issues.length ? issues : [validationResult.reason];
+    validationResult.warnings = [...(validationResult.warnings || []), ...soft];
+    validationResult.issues = [];
+    validationResult.valid = true;
+    delete validationResult.reason;
+  }
+  return validationResult;
+};
+
 const buildValidationPrompt = (docType, context, orderOrTripData) => {
   const docTypeLower = docType.toLowerCase();
   
+  // The model has no reliable idea of "today" (its training data ends earlier), so without
+  // this it treated documents dated today as "in the future" and rejected them (Nov 2026).
+  const todayIso = new Date().toISOString().split('T')[0];
   let prompt = `Analyze this ${docType} document and validate it for a ${context}. `;
+  prompt += `Today's date is ${todayIso}. A date on or before ${todayIso} is NOT in the future; only a date after ${todayIso} is a future date. `;
   
   // Add context-specific requirements
   if (context === 'order') {
@@ -1104,9 +1155,10 @@ const buildValidationPrompt = (docType, context, orderOrTripData) => {
     prompt += `For Bill of Lading (BOL), check:
 - All required fields are present (shipper, receiver, commodity, weight, etc.)
 - Dates are valid and not expired
-- Signatures are present if required
 - Document matches the order/trip information provided
-- No obvious errors or inconsistencies`;
+- No obvious errors or inconsistencies
+A BOL is usually uploaded when Dispatch creates the order, BEFORE pickup, so it is normally not signed yet.
+Missing shipper/carrier/receiver signatures on a BOL must go in "warnings", never in "issues", and must NOT make "valid" false.`;
   } else if (docTypeLower.includes('pod') || docTypeLower.includes('proof of delivery')) {
     prompt += `For Proof of Delivery (POD), check:
 - Delivery date and time are present
