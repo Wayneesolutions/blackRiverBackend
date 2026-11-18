@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { getStatusPermissionError, canMarkCompleted } from '../utils/orderStatusPermissions.js';
+import { getStatusPermissionError, canMarkDelivered } from '../utils/orderStatusPermissions.js';
 import Order from "../models/orderModel.js";
 import { Invoice } from "../models/hr/invoiceModel.js"; // Import Invoice model
 import Trip from "../models/tripModel.js";
@@ -12,6 +12,7 @@ import { syncBrokeredLoadBill } from "./hr/billController.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import Place from "../models/driver/placeModel.js";
 import { validateDocuments } from "../services/documentValidationService.js";
+import { ensureOrderInvoice } from "../services/orderInvoiceService.js";
 import { getCoordinatesFromAddress, getRouteDistance } from "../services/googlemap.js";
 import { haversineDistance } from "../utils/distance.js";
 import { sendLoadAssignmentEmail, sendLoadCancellationEmail } from "../services/emailService.js";
@@ -2052,7 +2053,10 @@ export const updateOrder = async (req, res) => {
     if (req.body.tripNo !== undefined) order.tripNo = normalizeString(req.body.tripNo);
     if (req.body.orderType !== undefined) order.orderType = normalizeString(req.body.orderType);
     if (req.body.freightOn !== undefined) order.freightOn = normalizeString(req.body.freightOn) || 'Order';
-    if (req.body.salesman !== undefined) order.salesman = normalizeString(req.body.salesman);
+    // Salesman is set to the creator; only admin/superadmin may change it (client request, Nov 2026)
+    if (req.body.salesman !== undefined && ['admin', 'superadmin'].includes(req.user?.role)) {
+      order.salesman = normalizeString(req.body.salesman);
+    }
     if (req.body.orderNotes !== undefined) order.orderNotes = normalizeString(req.body.orderNotes);
     if (req.body.customer !== undefined) order.customer = normalizeObjectId(req.body.customer);
     if (req.body.pickupDate !== undefined) order.pickupDate = req.body.pickupDate ? new Date(req.body.pickupDate) : null;
@@ -3042,95 +3046,12 @@ export const updateOrder = async (req, res) => {
     // =================================================================
     // 🔄 AUTO-INVOICE GENERATION
     // =================================================================
-    // Condition: Status changes to 'delivered'/ 'completed' AND no existing invoice
+    // Status changes to 'delivered'/'completed' and the order has no invoice yet.
+    // Shared with the status-only endpoint, document approval and trip completion.
     const isDelivered = ['delivered', 'completed'].includes(order.status);
-    const isStatusUpdate = req.body.status && ['delivered', 'completed'].includes(req.body.status);
-
-    console.log(`🔍 [AUTO-INVOICE CHECK] OrderID: ${orderObj.orderNumber}, OrderStatus: ${order.status}, ReqStatus: ${req.body.status}`);
-    console.log(`   Condition (isDelivered && isStatusUpdate): ${isDelivered} && ${isStatusUpdate}`);
-
+    const isStatusUpdate = req.body.status && ['delivered', 'completed'].includes(normalizeOrderStatus(req.body.status));
     if (isDelivered && isStatusUpdate) {
-      console.log('   Checking for existing invoice...');
-      // Use dynamic import for Invoice to avoid circular dependency issues if any
-      const { Invoice } = await import("../models/hr/invoiceModel.js");
-      const existingInvoice = await Invoice.findOne({ orderId: order._id });
-
-      if (!existingInvoice) {
-        console.log(`🧾 [AUTO-INVOICE] No existing invoice. Generating for Order ${orderObj.orderNumber}...`);
-
-        // Fetch customer details if not fully populated
-        let clientName = 'Unknown Client';
-        let clientEmail = '';
-        let clientAddress = '';
-        let clientPhone = '';
-
-        console.log('   Resolving Customer...');
-        // Ensure customer is populated or fetch it
-        if (order.customer) {
-          console.log('   Customer field exists on order object');
-          // If customer is an ID (object id), we might need to fetch it
-          if (order.customer.name) {
-            clientName = order.customer.name;
-            clientEmail = order.customer.email;
-            clientPhone = order.customer.phone;
-            clientAddress = order.customer.address;
-            console.log('   Using populated customer data');
-          } else {
-            console.log('   Customer might be ID, fetching from User model...');
-            // Try to find from User model using existing import
-            const { User } = await import("../models/driver/userModel.js");
-            const customerUser = await User.findById(order.customer);
-            if (customerUser) {
-              clientName = customerUser.name;
-              clientEmail = customerUser.email;
-              clientPhone = customerUser.phone;
-              clientAddress = customerUser.address || customerUser.customerDetails?.address;
-              console.log('   Fetched customer user:', clientName);
-            } else {
-              console.warn('   ⚠️ Could not find Customer User by ID');
-            }
-          }
-        } else {
-          console.warn('   ⚠️ Order has no customer field!');
-        }
-
-        // Use totalAmount OR rate OR 0
-        const invoiceAmountVal = order.totalAmount || order.rate || 0;
-        const invoiceAmountStr = String(invoiceAmountVal);
-        console.log(`   Invoice Amount: ${invoiceAmountVal} (as string: ${invoiceAmountStr})`);
-
-        const newInvoice = new Invoice({
-          orderId: order._id,
-          clientName: clientName || `Client for Order ${orderObj.orderNumber}`,  // Fallback to avoid validation error
-          clientEmail: clientEmail,
-          clientPhone: clientPhone,
-          clientAddress: clientAddress,
-          amount: invoiceAmountStr,
-          currency: order.currency || order.rateCurrency || 'CAD',
-          status: 'pending',
-          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Default Net 30
-          invoiceDate: new Date(),
-          company: order.company,
-          serviceBreakdown: [{
-            description: `Freight Charges - Order #${orderObj.orderNumber}`,
-            unitPrice: invoiceAmountVal,
-            amount: invoiceAmountVal,
-            quantity: 1
-          }]
-        });
-
-        try {
-          const savedInvoice = await newInvoice.save();
-          console.log(`✅ [AUTO-INVOICE] Invoice created successfully: ${savedInvoice._id}`);
-        } catch (invErr) {
-          console.error(`❌ [AUTO-INVOICE] Failed to save invoice:`, invErr);
-          console.error('   Validation Errors:', invErr.errors);
-        }
-      } else {
-        console.log(`ℹ️ [AUTO-INVOICE] Invoice already exists for this order: ${existingInvoice._id}`);
-      }
-    } else {
-      console.log('   Skipping Auto-Invoice (Condition not met)');
+      await ensureOrderInvoice(order);
     }
 
     // =================================================================
@@ -4559,8 +4480,8 @@ export const approveOrderDocuments = async (req, res) => {
     const approverId = req.user._id;
     const companyId = getUserCompanyId(req.user);
 
-    // Only dispatchers, admins, and superadmins can approve
-    if (!['admin', 'superadmin', 'dispatcher'].includes(req.user.role)) {
+    // Only Dispatch (role or dispatch_load portal grant), admins and superadmins can approve
+    if (!canMarkDelivered(req.user)) {
       return res.status(403).json({
         success: false,
         message: 'Only dispatchers and administrators can approve order documents.'
@@ -4604,15 +4525,13 @@ export const approveOrderDocuments = async (req, res) => {
     order.approvedWithoutDocuments = approveWithoutDocuments === true;
 
     // If the driver has already finished the load (status pending_review /
-    // verification_pending), approving the POD is the final step: mark it completed.
-    // Previously the order stayed in pending_review after approval, so it never
-    // reached driver payroll, settlements or invoicing (all of which read 'completed').
-    // Approving the POD moves the order to 'delivered'. Only Accounts may then mark it
-    // 'completed' (which is what payroll, settlements and invoicing read) — client
-    // request, Nov 2026. Accounts/admin approving their own review still completes it.
+    // verification_pending), approving the documents marks it 'delivered'.
+    // Client flow (Nov 2026): Driver finishes -> Dispatch approves -> Delivered ->
+    // Accounts marks Completed. This holds for admins too: before, an admin approving
+    // skipped Delivered and went straight to Completed, bypassing Accounts.
     const awaitingApproval = ['pending_review', 'verification_pending'].includes(String(order.status || '').toLowerCase());
     if (awaitingApproval) {
-      order.status = (canMarkCompleted(req.user) && req.user?.role !== 'dispatcher') ? 'completed' : 'delivered';
+      order.status = 'delivered';
     }
 
     await order.save();
@@ -4623,10 +4542,14 @@ export const approveOrderDocuments = async (req, res) => {
       { path: 'driver', select: 'name email phone' }
     ]);
 
+    if (awaitingApproval) {
+      await ensureOrderInvoice(order);
+    }
+
     res.json({
       success: true,
       message: awaitingApproval
-        ? 'Documents approved. Order marked as completed and is now available for driver payroll.'
+        ? 'Documents approved. Order marked as Delivered — Accounts can now mark it Completed.'
         : approveWithoutDocuments
           ? 'Order approved without documents. Order can now be completed.'
           : 'Order documents approved. Order can now be completed.',
@@ -4661,19 +4584,20 @@ export const verifyAndCompleteOrder = async (req, res) => {
     }
 
     if (action === 'approve') {
-      // Dispatch approval = delivered; Accounts completes it (client request, Nov 2026)
-      order.status = (canMarkCompleted(req.user) && req.user?.role !== 'dispatcher') ? 'completed' : 'delivered';
+      // Dispatch approval = Delivered; only Accounts marks Completed (client request, Nov 2026)
+      order.status = 'delivered';
       order.documentVerification.verificationStatus = 'verified';
       order.documentVerification.verifiedBy = dispatcherId;
       order.documentVerification.verifiedAt = new Date();
       
       await order.save();
+      await ensureOrderInvoice(order);
 
-      console.log('✅ Order approved and completed:', orderId);
+      console.log('✅ Order approved and marked delivered:', orderId);
 
       res.status(200).json({
         success: true,
-        message: 'Order approved and marked as completed',
+        message: 'Order approved and marked as Delivered. Accounts can now mark it Completed.',
         data: order
       });
 
@@ -4887,6 +4811,12 @@ export const updateOrderStatusOnly = async (req, res) => {
     order.status = nextStatus;
     if (nextStatus === 'completed' && !order.actualEndDate) order.actualEndDate = new Date();
     await order.save();
+
+    // The status dropdown used to go through updateOrder, which creates the invoice. Keep doing
+    // that here, otherwise Delivered/Completed orders never get one.
+    if (['delivered', 'completed'].includes(nextStatus)) {
+      await ensureOrderInvoice(order);
+    }
 
     console.log(`🔁 [ORDER STATUS] ${order.orderNumber}: ${previousStatus} -> ${nextStatus} by ${req.user?.role} ${req.user?._id}`);
     return res.json({ success: true, message: 'Order status updated', data: order });
