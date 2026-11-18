@@ -129,6 +129,7 @@ import {
   getAllOrders,
   getOrderById,
   updateOrder,
+  updateOrderStatusOnly,
   deleteOrder,
   createBulkOrders,
   getOrderSuggestions,
@@ -858,6 +859,14 @@ dispatcherRoute.delete(
   authMiddleware,
   authorizeRoles('admin', 'superadmin', 'dispatcher'),
   deleteOrder
+)
+
+// Status-only change: Dispatch marks Delivered, Accounts marks Completed
+dispatcherRoute.patch(
+  '/order/:id/status',
+  authMiddleware,
+  authorizeRoles('admin', 'superadmin', 'dispatcher', 'accountant'),
+  updateOrderStatusOnly
 )
 
 // Dispatch uploads a document (BOL, POD, rate confirmation, manifest, other) to an order

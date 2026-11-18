@@ -1498,6 +1498,7 @@ export const importFuelReportsFromCsv = async (req, res) => {
 
     // Parse CSV (quoted cells may contain commas, e.g. "1,250.00")
     const { rows: csvRows } = parseCsv(fileBuffer.toString('utf-8'));
+    const unitCache = new Map();
 
     if (csvRows.length < 1) {
       return res.status(400).json({
@@ -1582,7 +1583,10 @@ export const importFuelReportsFromCsv = async (req, res) => {
 
         // Trucks and trailers can be in FleetUnit, Vehicle or Trailer.
         // Match by ID, unit number, internal ID or plate.
-        const vehicleDoc = await findFuelUnit(unitValue, companyId);
+        // Same unit appears on many rows: look it up once (up to 6 regex queries per lookup)
+        const unitKey = String(unitValue).trim().toLowerCase();
+        if (!unitCache.has(unitKey)) unitCache.set(unitKey, await findFuelUnit(unitValue, companyId));
+        const vehicleDoc = unitCache.get(unitKey);
 
         if (!vehicleDoc) {
           results.failed++;

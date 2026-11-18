@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { getStatusPermissionError, canMarkCompleted } from '../utils/orderStatusPermissions.js';
 import Order from "../models/orderModel.js";
 import { Invoice } from "../models/hr/invoiceModel.js"; // Import Invoice model
 import Trip from "../models/tripModel.js";
@@ -37,6 +38,50 @@ const normalizeString = (value) => {
   if (value === undefined || value === null) return '';
   const str = String(value).trim();
   return str.length ? str : '';
+};
+
+// Returns an error message if any mandatory pickup/drop-off field is blank, else null.
+// The web form sends Pick Up Number as `pickupRefNo` and Pick Up Notes as `pickupNote`.
+const getMissingStopFieldsError = (body = {}) => {
+  if (!normalizeString(body.pickupRefNo)) return 'Pick Up Number is required';
+  if (!normalizeString(body.pickupNote)) return 'Pick Up Notes are required';
+  if (!normalizeString(body.dropOffNumber || body.deliveryRefNo)) return 'Drop Off Number is required';
+  if (!normalizeString(body.dropOffNotes || body.deliveryNote)) return 'Drop Off Notes are required';
+  const stops = Array.isArray(body.stops) ? body.stops : [];
+  const badStop = stops.find((s) => !normalizeString(s?.pickUpNumber));
+  if (badStop) return `Pick Up Number is required for stop ${badStop.stop ?? ''}`.trim();
+  const receiverStops = Array.isArray(body.receiverStops) ? body.receiverStops : [];
+  const badReceiver = receiverStops.find((s) => !normalizeString(s?.dropOffNumber));
+  if (badReceiver) return `Drop Off Number is required for receiver stop ${badReceiver.stop ?? ''}`.trim();
+  return null;
+};
+
+const DOCUMENT_FIELD_TYPES = {
+  bol: { type: 'bol', label: 'Bill of Lading (BOL)' },
+  pod: { type: 'pod', label: 'Proof of Delivery (POD)' },
+  stampedManifest: { type: 'stamped_manifest', label: 'Stamped Manifest' },
+  printedManifest: { type: 'manifest', label: 'Manifest' },
+  rateConfirmation: { type: 'rate_confirmation', label: 'Rate Confirmation' },
+};
+
+const appendDocumentAttachments = (attachments, files = {}, getFileUrl, userId) => {
+  Object.entries(DOCUMENT_FIELD_TYPES).forEach(([field, meta], i) => {
+    const file = Array.isArray(files[field]) ? files[field][0] : null;
+    if (!file) return;
+    const url = getFileUrl(file);
+    if (!url || attachments.some((a) => a.url === url)) return;
+    attachments.push({
+      id: String(Date.now() + 1000 + i),
+      name: file.originalname || meta.label,
+      url,
+      type: meta.type,
+      uploadedAt: new Date(),
+      uploadedBy: userId,
+      fileSize: file.size || 0,
+      payable: false,
+      shareWithDriver: true,
+    });
+  });
 };
 
 // Normalize order status to valid enum values (supports uppercase inputs)
@@ -170,6 +215,18 @@ export const createOrder = async (req, res) => {
     }
     if (req.body.stops && typeof req.body.stops === 'string') {
       req.body.stops = parseFormDataField(req.body.stops);
+    }
+
+    // Pick Up Number / Notes and Drop Off Number / Notes are mandatory (client request, Nov 2026)
+    const requiredFieldError = getMissingStopFieldsError(req.body);
+    if (requiredFieldError) {
+      return res.status(400).json({ success: false, message: requiredFieldError });
+    }
+
+    // Salesman = the user creating the order, unless an admin explicitly picked someone
+    const canPickSalesman = ['admin', 'superadmin'].includes(req.user?.role);
+    if (!canPickSalesman || !normalizeString(req.body.salesman)) {
+      req.body.salesman = req.user?._id ? String(req.user._id) : normalizeString(req.body.salesman);
     }
 
     // Process uploaded files
@@ -748,6 +805,10 @@ export const createOrder = async (req, res) => {
         }
       });
     }
+    // Documents uploaded through the dedicated fields (BOL, POD, manifest, rate con) also go into
+    // `attachments`, which is what the Documents panel lists and what open/print/download signs.
+    // Before this they were saved only under `documents.*` and never showed up there.
+    appendDocumentAttachments(processedAttachments, files, getFileUrl, req.user?._id);
     orderData.attachments = processedAttachments;
 
     // Validation
@@ -1557,6 +1618,17 @@ export const updateOrder = async (req, res) => {
         success: false,
         message: "Order not found"
       });
+    }
+
+    // Dispatch marks Delivered, Accounts marks Completed (client request, Nov 2026)
+    if (req.body.status !== undefined) {
+      const nextStatus = normalizeOrderStatus(req.body.status);
+      if (nextStatus && nextStatus !== order.status) {
+        const permissionError = getStatusPermissionError(req.user, nextStatus);
+        if (permissionError) {
+          return res.status(403).json({ success: false, message: permissionError });
+        }
+      }
     }
 
     // Check if trying to set status to 'completed' without document approval
@@ -2374,7 +2446,8 @@ export const updateOrder = async (req, res) => {
     }
 
     // Update attachments array - process uploaded files first
-    if (req.body.attachments !== undefined || (files.attachment && files.attachment.length > 0)) {
+    const hasDocumentFieldUpload = Object.keys(DOCUMENT_FIELD_TYPES).some((f) => Array.isArray(files[f]) && files[f].length > 0);
+    if (req.body.attachments !== undefined || (files.attachment && files.attachment.length > 0) || hasDocumentFieldUpload) {
       let processedAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : (order.attachments || []);
 
       // The form sends back the attachments it loaded, and those carry 1-hour signed S3 links and no
@@ -2433,6 +2506,7 @@ export const updateOrder = async (req, res) => {
         });
       }
 
+      appendDocumentAttachments(processedAttachments, files, getFileUrl, req.user?._id);
       order.attachments = processedAttachments;
       order.markModified('attachments');
       console.log('📎 [ORDER UPDATE] Saving attachments:', {
@@ -4533,9 +4607,12 @@ export const approveOrderDocuments = async (req, res) => {
     // verification_pending), approving the POD is the final step: mark it completed.
     // Previously the order stayed in pending_review after approval, so it never
     // reached driver payroll, settlements or invoicing (all of which read 'completed').
+    // Approving the POD moves the order to 'delivered'. Only Accounts may then mark it
+    // 'completed' (which is what payroll, settlements and invoicing read) — client
+    // request, Nov 2026. Accounts/admin approving their own review still completes it.
     const awaitingApproval = ['pending_review', 'verification_pending'].includes(String(order.status || '').toLowerCase());
     if (awaitingApproval) {
-      order.status = 'completed';
+      order.status = (canMarkCompleted(req.user) && req.user?.role !== 'dispatcher') ? 'completed' : 'delivered';
     }
 
     await order.save();
@@ -4584,7 +4661,8 @@ export const verifyAndCompleteOrder = async (req, res) => {
     }
 
     if (action === 'approve') {
-      order.status = 'completed';
+      // Dispatch approval = delivered; Accounts completes it (client request, Nov 2026)
+      order.status = (canMarkCompleted(req.user) && req.user?.role !== 'dispatcher') ? 'completed' : 'delivered';
       order.documentVerification.verificationStatus = 'verified';
       order.documentVerification.verifiedBy = dispatcherId;
       order.documentVerification.verifiedAt = new Date();
@@ -4760,5 +4838,60 @@ export const uploadOrderDocumentByDispatch = async (req, res) => {
   } catch (error) {
     console.error('Dispatch order document upload error:', error);
     res.status(500).json({ success: false, message: error.message || 'Upload failed' });
+  }
+};
+
+// Change only an order's status. Used by the status dropdown so Accounts can mark trips
+// Completed without full edit rights (client request, Nov 2026):
+//   Dispatch -> Delivered, Accounts -> Completed (see utils/orderStatusPermissions.js)
+export const updateOrderStatusOnly = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const nextStatus = normalizeOrderStatus(req.body?.status);
+    const allowed = ['draft', 'planned', 'quoted', 'in-delivery', 'delivered', 'completed', 'canceled', 'verification_pending', 'pending_review'];
+    if (!nextStatus || !allowed.includes(nextStatus)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const query = { _id: id };
+    const companyId = getUserCompanyId(req.user);
+    if (req.user?.role !== 'superadmin' && companyId) query.company = companyId;
+    const order = await Order.findOne(query);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    if (nextStatus === order.status) {
+      return res.json({ success: true, message: 'Status unchanged', data: order });
+    }
+
+    const permissionError = getStatusPermissionError(req.user, nextStatus);
+    if (permissionError) return res.status(403).json({ success: false, message: permissionError });
+
+    // Accounts may only complete a trip Dispatch has delivered (POD checked)
+    if (nextStatus === 'completed' && !order.documentsApproved && order.status !== 'delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot complete this trip yet. Dispatch must approve the documents and mark it Delivered first.'
+      });
+    }
+    // Only Dispatch/Accounts/admin may move a trip they are not entitled to change at all
+    const isStaff = ['admin', 'superadmin', 'dispatcher', 'accountant'].includes(req.user?.role)
+      || (Array.isArray(req.user?.portals) && req.user.portals.some((p) => ['dispatch_load', 'accounts'].includes(p)));
+    if (!isStaff) return res.status(403).json({ success: false, message: 'Not allowed to change trip status' });
+    // Accountants (without the dispatch portal) can only complete trips
+    const accountsOnly = req.user?.role === 'accountant' && !(req.user?.portals || []).includes('dispatch_load');
+    if (accountsOnly && nextStatus !== 'completed') {
+      return res.status(403).json({ success: false, message: 'Accounts can only mark trips as Completed.' });
+    }
+
+    const previousStatus = order.status;
+    order.status = nextStatus;
+    if (nextStatus === 'completed' && !order.actualEndDate) order.actualEndDate = new Date();
+    await order.save();
+
+    console.log(`🔁 [ORDER STATUS] ${order.orderNumber}: ${previousStatus} -> ${nextStatus} by ${req.user?.role} ${req.user?._id}`);
+    return res.json({ success: true, message: 'Order status updated', data: order });
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to update status' });
   }
 };

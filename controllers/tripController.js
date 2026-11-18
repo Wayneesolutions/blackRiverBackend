@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { canMarkCompleted } from '../utils/orderStatusPermissions.js';
 import axios from "axios";
 import Trip from "../models/tripModel.js";
 import Order from "../models/orderModel.js";
@@ -19,6 +20,9 @@ import { s3 } from "../config/awsConfig.js";
 import { sendLoadAssignmentEmail, sendLoadCancellationEmail } from "../services/emailService.js";
 import { sendPushToDriver } from "../services/pushNotificationService.js";
 import ActivityLog from "../models/activitylogModel.js";
+
+const orderStatusAfterTripFinish = (user) =>
+  (canMarkCompleted(user) && !['driver', 'dispatcher'].includes(user?.role)) ? 'completed' : 'delivered';
 
 // Helper function to generate signed URL for S3 images
 const generateSignedUrl = async (url) => {
@@ -2171,6 +2175,9 @@ export const getDriverTrips = async (req, res) => {
         commodity: order.commodity,
         weight: order.weight,
         weightUnit: order.weightUnit,
+        // Reefer temperature for the driver's dispatch sheet
+        temperature: order.temperature,
+        temperatureUnit: order.temperatureUnit,
         noOfPackages: order.noOfPackages,
         noOfPackagesType: order.noOfPackagesType,
         items: order.items || [],
@@ -2466,7 +2473,9 @@ export const completeTrip = async (req, res) => {
           { _id: { $in: trip.orders } },
           { 
             $set: { 
-              status: 'completed',
+              // Driver/Dispatch finishing the run = orders Delivered; only Accounts marks
+              // them Completed (client request, Nov 2026)
+              status: orderStatusAfterTripFinish(req.user),
               actualEndDate: new Date()
             } 
           }
@@ -2575,8 +2584,11 @@ export const completeTrip = async (req, res) => {
       });
     }
 
-    // Update order status to 'completed'
-    order.status = 'completed';
+    // Driver/Dispatch finishing = 'delivered'; only Accounts marks 'completed' (client request, Nov 2026)
+    // A driver's finish is a request for approval until Dispatch has OK'd the documents
+    order.status = (req.user?.role === 'driver' && !order.documentsApproved)
+      ? 'pending_review'
+      : orderStatusAfterTripFinish(req.user);
     order.actualEndDate = new Date();
     await order.save();
 

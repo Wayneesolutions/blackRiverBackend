@@ -79,12 +79,36 @@ export const parseCsvRows = (text, delimiter) => {
 
 // Parse CSV text into { headers, rows, delimiter }. Each row is an object
 // keyed by the header text exactly as it appears in the file.
+// Files exported from fuel portals often start with title lines ("Pilot Flying J - Customer
+// Portal", report dates) before the real header. Use the first row, within the first 15, that
+// has at least 2 distinct values and is about as wide as the widest row.
+const findHeaderRow = (all) => {
+  const look = all.slice(0, 15);
+  const filled = (r) => r.filter((v) => v.trim()).length;
+  const distinct = (r) => new Set(r.map((v) => v.trim()).filter(Boolean)).size;
+  const widest = Math.max(...look.map(filled));
+  const idx = look.findIndex((r) => distinct(r) >= 2 && filled(r) >= Math.ceil(widest * 0.6));
+  return idx < 0 ? 0 : idx;
+};
+
+// Repeated or blank header names would overwrite each other in the row objects.
+const uniqueHeaders = (raw) => {
+  const seen = new Map();
+  return raw.map((h, i) => {
+    const base = h.trim() || `Column ${i + 1}`;
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    return n === 1 ? base : `${base} (${n})`;
+  });
+};
+
 export const parseCsv = (text) => {
   const delimiter = detectDelimiter(text);
   const all = parseCsvRows(text, delimiter);
   if (all.length === 0) return { headers: [], rows: [], delimiter };
-  const headers = all[0];
-  const rows = all.slice(1).map((values) =>
+  const headerIdx = findHeaderRow(all);
+  const headers = uniqueHeaders(all[headerIdx]);
+  const rows = all.slice(headerIdx + 1).map((values) =>
     headers.reduce((obj, header, index) => {
       obj[header] = values[index] ?? "";
       return obj;
