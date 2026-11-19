@@ -6,6 +6,7 @@ import { Bill } from "../../models/hr/billModel.js";
 import Vendor from "../../models/vendorModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { signS3Url } from "../../utils/s3SignedUrl.js";
+import { ensureCarrierCustomer } from "../../utils/carrierDirectory.js";
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -306,6 +307,8 @@ export const createCarrier = async (req, res) => {
       status: 'active',
       company: companyId,
     });
+    // Also listed on the Customer page under the Carrier category
+    await ensureCarrierCustomer({ companyId, name, phone: carrier.phone, email: carrier.email, address: carrier.address });
     res.status(201).json({ success: true, message: 'Carrier added', data: carrier });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

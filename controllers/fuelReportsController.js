@@ -14,6 +14,7 @@ import fs from "fs";
 import { Trailer } from "../models/driver/trailerModel.js";
 import { parseCsv, parseNumber, parseFuelDate, detectDateOrder } from "../utils/fuelCsv.js";
 import { parsePfjXlsx, parsePfjPdf, summarize } from '../utils/pilotFlyingJParser.js';
+import { withViewUrls } from '../utils/s3SignedUrl.js';
 
 // Helper function to extract real ID from prefixed IDs (e.g., "custom-123" -> "123")
 const extractRealId = (prefixedId) => {
@@ -121,6 +122,28 @@ const describeFuelUnits = async (ids) => {
     remaining = remaining.filter(id => !map.has(String(id)));
   }
   return map;
+};
+
+// transactionNumber has one unique index across ALL companies, so the same fuel-card purchase
+// imported by another account (demo/test companies imported the same Pilot Flying J file)
+// made this company's import skip every row as "already imported" or fail with a duplicate
+// key, and nothing got saved (client 19 Nov: "not able to save the report"). Duplicates are
+// now checked inside the company; when another company holds the number, a company-suffixed
+// number is stored instead.
+const companyTrxSuffix = (companyId) => (companyId ? String(companyId).slice(-6) : 'x');
+const resolveTransactionNumber = async (number, companyId, excludeId = null) => {
+  const num = String(number).trim();
+  const alt = `${num}-${companyTrxSuffix(companyId)}`;
+  const notMe = excludeId ? { _id: { $ne: excludeId } } : {};
+  const mine = await FuelReport.exists({
+    ...notMe,
+    transactionNumber: { $in: [num, alt] },
+    ...(companyId ? { company: companyId } : {}),
+  });
+  if (mine) return { duplicate: true, number: num };
+  if (!(await FuelReport.exists({ ...notMe, transactionNumber: num }))) return { number: num };
+  if (!(await FuelReport.exists({ ...notMe, transactionNumber: alt }))) return { number: alt };
+  return { number: `${num}-${Date.now()}` };
 };
 
 // CSV currency text -> stored value ('USA' | 'CAD'). Unknown text -> null.
@@ -325,13 +348,14 @@ export const createFuelReport = async (req, res) => {
     
     // If transactionNumber is provided, validate uniqueness
     if (transactionNumber) {
-      const existing = await FuelReport.findOne({ transactionNumber });
-      if (existing) {
+      const resolved = await resolveTransactionNumber(transactionNumber, vehicleDoc.company || companyId);
+      if (resolved.duplicate) {
         return res.status(400).json({ 
           success: false, 
-          message: `Transaction number "${transactionNumber}" already exists. Please use a unique transaction number.` 
+          message: `Transaction number "${transactionNumber}" is already on another fuel report. Please check the number.` 
         });
       }
+      transactionNumber = resolved.number;
     } else {
       // Auto-generate transaction number if not provided
       const timestamp = Date.now();
@@ -635,18 +659,17 @@ export const updateFuelReport = async (req, res) => {
       const newTransactionNumber = req.body.transactionNumber || null;
       if (newTransactionNumber && newTransactionNumber !== existingReport.transactionNumber) {
         // Check if transaction number already exists (excluding current report)
-        const existingWithNumber = await FuelReport.findOne({ 
-          transactionNumber: newTransactionNumber,
-          _id: { $ne: id }
-        });
-        if (existingWithNumber) {
+        const resolved = await resolveTransactionNumber(newTransactionNumber, existingReport.company, id);
+        if (resolved.duplicate) {
           return res.status(400).json({ 
             success: false, 
-            message: `Transaction number "${newTransactionNumber}" already exists. Please use a unique transaction number.` 
+            message: `Transaction number "${newTransactionNumber}" is already on another fuel report. Please check the number.` 
           });
         }
+        updatePayload.transactionNumber = resolved.number;
+      } else {
+        updatePayload.transactionNumber = newTransactionNumber;
       }
-      updatePayload.transactionNumber = newTransactionNumber;
     }
 
     // updatedAt is automatically handled by { timestamps: true } in the schema
@@ -668,6 +691,64 @@ export const updateFuelReport = async (req, res) => {
 };
 
 // Delete Fuel Report
+// Files picked in the fuel report form ("Attach documents" / the receipt read by AI) used to
+// be shown in the form and then dropped: only the names were kept, nothing was uploaded
+// (client 19 Nov: "not able to save the report or upload it properly").
+const findCompanyFuelReport = async (req) => {
+  const companyId = getUserCompanyId(req.user);
+  const isSuperadmin = req.user?.role === 'superadmin';
+  if (!isSuperadmin && !companyId) return null;
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return null;
+  return FuelReport.findOne({ _id: req.params.id, ...(isSuperadmin ? {} : { company: companyId }) });
+};
+
+// POST /dispatcher/fuel-report/:id/attachments  (multipart, field "files")
+export const uploadFuelReportAttachments = async (req, res) => {
+  try {
+    const report = await findCompanyFuelReport(req);
+    if (!report) return res.status(404).json({ success: false, message: "Fuel report not found" });
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ success: false, message: "Choose a file to upload" });
+    files.forEach((f) => {
+      const url = f.location || (f.path ? `/${String(f.path).replace(/\\/g, '/')}` : '');
+      if (url) report.attachments.push({ name: f.originalname, url, mimeType: f.mimetype });
+    });
+    await report.save();
+    return res.status(200).json({
+      success: true,
+      message: `${files.length} file(s) attached`,
+      data: { _id: report._id, attachments: await withViewUrls(report.attachments) },
+    });
+  } catch (error) {
+    console.error("Error uploading fuel report attachments:", error);
+    return res.status(500).json({ success: false, message: error.message || "Upload failed" });
+  }
+};
+
+// GET /dispatcher/fuel-report/:id/attachments -> attachments with signed view links
+export const getFuelReportAttachments = async (req, res) => {
+  try {
+    const report = await findCompanyFuelReport(req);
+    if (!report) return res.status(404).json({ success: false, message: "Fuel report not found" });
+    return res.status(200).json({ success: true, data: await withViewUrls(report.attachments || []) });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// DELETE /dispatcher/fuel-report/:id/attachments/:attachmentId
+export const deleteFuelReportAttachment = async (req, res) => {
+  try {
+    const report = await findCompanyFuelReport(req);
+    if (!report) return res.status(404).json({ success: false, message: "Fuel report not found" });
+    report.attachments = (report.attachments || []).filter(a => String(a._id) !== String(req.params.attachmentId));
+    await report.save();
+    return res.status(200).json({ success: true, data: await withViewUrls(report.attachments) });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const deleteFuelReport = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1610,12 +1691,13 @@ export const importFuelReportsFromCsv = async (req, res) => {
         }
 
         // Check for duplicate transaction number
-        const existingReport = await FuelReport.findOne({ transactionNumber });
-        if (existingReport) {
+        const resolvedTrx = await resolveTransactionNumber(transactionNumber, vehicleDoc.company || companyId);
+        if (resolvedTrx.duplicate) {
           results.failed++;
-          results.errors.push(`Row ${i + 1}: Transaction number already exists: ${transactionNumber}`);
+          results.errors.push(`Row ${i + 1}: Already imported (transaction ${transactionNumber})`);
           continue;
         }
+        transactionNumber = resolvedTrx.number;
 
         // Create fuel report
         const report = new FuelReport({
@@ -1901,7 +1983,7 @@ export const parseFuelCardPdf = async (req, res) => {
     // parsers and the one that finds more transactions wins (PFJ cells wrap over several lines,
     // which the EFS parser can't follow).
     const name = (req.file.originalname || '').toLowerCase();
-    const isExcel = name.endsWith('.xlsx') || /spreadsheetml/.test(req.file.mimetype || '');
+    const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls') || /spreadsheetml|ms-excel/.test(req.file.mimetype || '');
     let rawTransactions;
     if (isExcel) {
       rawTransactions = parsePfjXlsx(fileBuffer);
@@ -1922,9 +2004,15 @@ export const parseFuelCardPdf = async (req, res) => {
 
     // Already imported (same purchase from an earlier upload, PDF or Excel): shown, skipped by default
     const importKeys = rawTransactions.map(t => t.importKey).filter(Boolean);
+    // (only this company's reports count; the stored number may carry the company suffix)
+    const trxSuffix = `-${companyTrxSuffix(companyId)}`;
     const alreadyImported = new Set(
       importKeys.length
-        ? (await FuelReport.find({ transactionNumber: { $in: importKeys } }).select('transactionNumber').lean()).map(r => r.transactionNumber)
+        ? (await FuelReport.find({
+            transactionNumber: { $in: [...importKeys, ...importKeys.map(k => `${k}${trxSuffix}`)] },
+            ...(companyId ? { company: companyId } : {}),
+          }).select('transactionNumber').lean())
+            .map(r => (r.transactionNumber.endsWith(trxSuffix) ? r.transactionNumber.slice(0, -trxSuffix.length) : r.transactionNumber))
         : []
     );
 
@@ -1952,14 +2040,25 @@ export const parseFuelCardPdf = async (req, res) => {
       ) || null;
     };
 
+    // Card reports write unit numbers loosely ("0101", "UNIT 101", "TRK-101" for unit 101):
+    // exact match first, then the same number with prefixes, spaces, dashes and leading zeros removed
+    const looseUnit = (v) => String(v || '').toLowerCase()
+      .replace(/^(unit|truck|trk|tractor|trailer|trl|veh|vehicle)\s*#?\s*/, '')
+      .replace(/[^a-z0-9]/g, '')
+      .replace(/^0+(?=\d)/, '');
     const matchVehicle = (vehicleRaw) => {
       if (!vehicleRaw) return null;
       const needle = vehicleRaw.toString().trim().toLowerCase();
-      return fleetUnits.find(u =>
-        (u.unitNo && u.unitNo.toLowerCase() === needle) ||
-        (u.internalId && u.internalId.toLowerCase() === needle) ||
-        (u.plate && u.plate.toLowerCase() === needle)
-      ) || null;
+      const exact = fleetUnits.find(u =>
+        (u.unitNo && String(u.unitNo).toLowerCase() === needle) ||
+        (u.internalId && String(u.internalId).toLowerCase() === needle) ||
+        (u.plate && String(u.plate).toLowerCase() === needle)
+      );
+      if (exact) return exact;
+      const loose = looseUnit(needle);
+      if (!loose) return null;
+      const hits = fleetUnits.filter(u => [u.unitNo, u.internalId, u.plate].some(v => v && looseUnit(v) === loose));
+      return hits.length === 1 ? hits[0] : null; // ambiguous -> left for review
     };
 
     const draftRows = rawTransactions.map((trx, idx) => {
@@ -2033,11 +2132,12 @@ export const confirmFuelCardImport = async (req, res) => {
         let transactionNumber;
         if (row.importKey) {
           // One purchase line = one key (same in the PFJ PDF and Excel): never saved twice
-          transactionNumber = row.importKey;
-          if (await FuelReport.exists({ transactionNumber })) {
+          const resolvedKey = await resolveTransactionNumber(row.importKey, companyId);
+          if (resolvedKey.duplicate) {
             results.skipped = (results.skipped || 0) + 1;
             continue;
           }
+          transactionNumber = resolvedKey.number;
         } else {
           // Ensure a unique transaction number exists
           transactionNumber = row.transactionNumber || `FC-${Date.now()}-${row._rowIndex}`;
