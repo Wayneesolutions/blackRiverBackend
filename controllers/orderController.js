@@ -621,7 +621,10 @@ export const createOrder = async (req, res) => {
       },
       // order.distance is stored in km (payroll converts km -> miles). The New Order form
       // sends its distance in MILES, so convert it when we couldn't calculate our own.
-      distance: calculatedDistance > 0
+      // Miles typed in on the Assignment step win over the map calculation.
+      distance: normalizeNumber(req.body.distanceMiles) > 0
+        ? Math.round((normalizeNumber(req.body.distanceMiles) / 0.621371) * 100) / 100
+        : calculatedDistance > 0
         ? calculatedDistance
         : (normalizeNumber(req.body.distance) > 0 ? Math.round((normalizeNumber(req.body.distance) / 0.621371) * 100) / 100 : normalizeNumber(req.body.distance)),
       additionalInfo: {
@@ -1999,6 +2002,32 @@ export const updateOrder = async (req, res) => {
       }
     }
 
+    // Miles. order.distance is stored in km (payroll and settlements convert to miles).
+    // updateOrder never touched it, so a load whose miles came out as 0 when it was created
+    // (address not found on the map) stayed at 0 miles in every settlement with no way to fix
+    // it (client 19 Nov). The Assignment step now sends the miles dispatch typed in.
+    if (req.body.distanceMiles !== undefined && req.body.distanceMiles !== null && req.body.distanceMiles !== '') {
+      const miles = normalizeNumber(req.body.distanceMiles);
+      if (miles >= 0) order.distance = Math.round((miles / 0.621371) * 100) / 100;
+    } else if (!(Number(order.distance) > 0)) {
+      // Still no miles: work them out from the pickup and delivery points if we have them
+      try {
+        const p = order.pickupLocation || {};
+        const d = order.deliveryLocation || {};
+        if (p.latitude && p.longitude && d.latitude && d.longitude) {
+          const origin = { latitude: parseFloat(p.latitude), longitude: parseFloat(p.longitude) };
+          const destination = { latitude: parseFloat(d.latitude), longitude: parseFloat(d.longitude) };
+          if ([origin.latitude, origin.longitude, destination.latitude, destination.longitude].every(Number.isFinite)) {
+            const km = (await getRouteDistance(origin, destination))
+              || haversineDistance(origin.latitude, origin.longitude, destination.latitude, destination.longitude);
+            if (km > 0) order.distance = Math.round(km * 100) / 100;
+          }
+        }
+      } catch (distanceError) {
+        console.error('📋 [ORDER UPDATE] Could not work out the miles:', distanceError.message);
+      }
+    }
+
     // Update other fields
     // Log received fields for debugging (after parsing) - Shipper and Receiver sections
     console.log('📋 [ORDER UPDATE] Received fields:', {
@@ -2570,8 +2599,9 @@ export const updateOrder = async (req, res) => {
       throw saveError;
     }
 
-    // Keep the carrier payable in step with the load (create / update / void)
-    if (carrierFieldsTouched) {
+    // Keep the carrier payable in step with the load (create / update / void). Also on any
+    // save of a brokered load, so loads booked before a rate was entered still get their bill.
+    if (carrierFieldsTouched || order.bookedForCarrier) {
       await syncBrokeredLoadBill(order, req.user?._id);
     }
 
@@ -4544,6 +4574,7 @@ export const approveOrderDocuments = async (req, res) => {
 
     if (awaitingApproval) {
       await ensureOrderInvoice(order);
+      if (order.bookedForCarrier) await syncBrokeredLoadBill(order, req.user?._id);
     }
 
     res.json({
@@ -4816,6 +4847,8 @@ export const updateOrderStatusOnly = async (req, res) => {
     // that here, otherwise Delivered/Completed orders never get one.
     if (['delivered', 'completed'].includes(nextStatus)) {
       await ensureOrderInvoice(order);
+      // Brokered load delivered -> carrier payable in Accounts Payable
+      if (order.bookedForCarrier) await syncBrokeredLoadBill(order, req.user?._id);
     }
 
     console.log(`🔁 [ORDER STATUS] ${order.orderNumber}: ${previousStatus} -> ${nextStatus} by ${req.user?.role} ${req.user?._id}`);

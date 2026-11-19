@@ -279,6 +279,23 @@ export const createSettlement = async (req, res) => {
       }
     }
 
+    // Miles typed in on the settlement for a load that had none (0 miles because its address
+    // wasn't found on the map): save them on the load too, so driver payroll and the next
+    // settlement agree (client 19 Nov: "no option to correct or write the miles")
+    const milesFixes = lineItems.filter(l => l.order && l.miles > 0);
+    if (milesFixes.length) {
+      try {
+        await Order.bulkWrite(milesFixes.map(l => ({
+          updateOne: {
+            filter: { _id: l.order, $or: [{ distance: { $exists: false } }, { distance: null }, { distance: { $lte: 0 } }] },
+            update: { $set: { distance: Math.round((l.miles / KM_TO_MILES) * 100) / 100 } },
+          },
+        })));
+      } catch (err) {
+        console.error('Could not save corrected miles on the loads:', err.message);
+      }
+    }
+
     // Auto-compute grossPay from miles if caller doesn't provide it (or sends 0)
     let computedGrossPay = Number(grossPay) || 0;
     let computedTotalMiles = 0;

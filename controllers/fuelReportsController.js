@@ -98,6 +98,31 @@ const describeFuelUnit = async (unitId) => {
   };
 };
 
+// Same as describeFuelUnit, for many ids at once: Map(id -> display fields)
+const describeFuelUnits = async (ids) => {
+  const map = new Map();
+  const valid = ids.filter(id => /^[a-f0-9]{24}$/i.test(String(id)));
+  if (!valid.length) return map;
+  const fields = "licensePlate plateNumber vinNo vinNumber unitNo unitNumber internalId unitType makeModel make model";
+  const toDetails = (doc, fallbackType) => {
+    let makeModel = doc.makeModel;
+    if (!makeModel || makeModel === "N/A") makeModel = [doc.make, doc.model].filter(Boolean).join(" ").trim() || "N/A";
+    const plateNumber = doc.licensePlate || doc.plateNumber || "N/A";
+    const unitNo = [doc.unitNo, doc.unitNumber, doc.internalId].find((v) => v && v !== "N/A") || plateNumber;
+    return { plateNumber, vinNumber: doc.vinNo || doc.vinNumber || "N/A", unitNo, unitType: doc.unitType || fallbackType || "N/A", makeModel };
+  };
+  // FleetUnit first, then Vehicle, then Trailer - same precedence as describeFuelUnit
+  const sources = [[FleetUnit, null], [Vehicle, "Truck"], [Trailer, "Trailer"]];
+  let remaining = valid;
+  for (const [Model, fallbackType] of sources) {
+    if (!remaining.length) break;
+    const docs = await Model.find({ _id: { $in: remaining } }).select(fields).lean();
+    docs.forEach(d => map.set(String(d._id), toDetails(d, fallbackType)));
+    remaining = remaining.filter(id => !map.has(String(id)));
+  }
+  return map;
+};
+
 // CSV currency text -> stored value ('USA' | 'CAD'). Unknown text -> null.
 const normalizeCurrency = (raw) => {
   if (!raw) return null;
@@ -709,40 +734,65 @@ export const getFuelReports = async (req, res) => {
     const sortOptions = {};
     sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-    // Get all reports first (for search filtering on populated fields)
+    // Reports for this company (reporter/driver names come back in the same query)
     let allReports = await FuelReport.find(filter)
       .populate("reporter", "name email")
       .populate("driver", "name email")
       .sort(sortOptions)
       .lean();
-    
-    // Manually populate vehicle and trip fields
-    for (let report of allReports) {
-      // Store original vehicle ID before populating (needed for trip matching)
-      const originalVehicleId = report.vehicle;
-      
-      // Populate vehicle field (FleetUnit, Vehicle or Trailer)
+
+    // Truck/trailer details in three queries in total. This used to run up to three
+    // lookups per unit field plus a trip search for EVERY report on every request; after
+    // a fuel-card import (hundreds of rows) the page sat on "Loading fuel reports..." and
+    // timed out (client 19 Nov: "fuel section still doesn't work").
+    const unitIds = new Set();
+    allReports.forEach(r => {
+      if (r.vehicle) unitIds.add(String(r.vehicle));
+      if (r.unit) unitIds.add(String(r.unit));
+    });
+    const unitMap = await describeFuelUnits([...unitIds]);
+    for (const report of allReports) {
+      report._vehicleId = report.vehicle; // original id, needed for trip matching below
       if (report.vehicle) {
-        const details = await describeFuelUnit(report.vehicle);
+        const details = unitMap.get(String(report.vehicle));
         report.vehicle = details
           ? { _id: report.vehicle, ...details }
           : { _id: report.vehicle, plateNumber: 'N/A', vinNumber: 'N/A', unitNo: 'N/A', unitType: 'N/A', makeModel: 'N/A' };
       }
-
-      // Populate unit field (same as vehicle but separate field)
       if (report.unit) {
-        const details = await describeFuelUnit(report.unit);
+        const details = unitMap.get(String(report.unit));
         report.unit = details
           ? { _id: report.unit, unitNo: details.unitNo, unitType: details.unitType, makeModel: details.makeModel }
           : { _id: report.unit, unitNo: 'N/A', unitType: 'N/A', makeModel: 'N/A' };
       } else if (report.vehicle && report.vehicle._id) {
-        // If unit is not set, use vehicle as unit
         report.unit = report.vehicle;
       }
+    }
+
+    // Search on the report and unit fields (trip details are only looked up for the page shown)
+    if (search) {
+      const searchLower = String(search).toLowerCase();
+      allReports = allReports.filter(report => [
+        report.reporter?.name, report.driver?.name, report.vehicle?.plateNumber, report.vehicle?.vinNumber,
+        report.vehicle?.unitNo, report.unit?.unitNo, report.status, report.transactionNumber,
+        report.city || report.cityLocation, report.state, report.paymentNotes, report.product || report.type,
+        report.fuelVendor,
+      ].some(v => v && String(v).toLowerCase().includes(searchLower)));
+    }
+
+    const total = allReports.length;
+    const reports = allReports.slice(skip, skip + parseInt(limit));
+
+    // Trip details only for the rows on this page, and not at all for the analytics /
+    // export calls that fetch everything (includeTrip=false)
+    const includeTrip = String(req.query.includeTrip ?? 'true') !== 'false';
+    for (const report of reports) {
+      const originalVehicleId = report._vehicleId;
+      delete report._vehicleId;
+      if (!includeTrip) { report.trip = null; continue; }
 
       // Populate trip field - first check if trip ID exists, otherwise try to find matching trip
       let tripDoc = null;
-      
       if (report.trip) {
         // If trip ID is set, fetch that trip
         try {
@@ -854,48 +904,6 @@ export const getFuelReports = async (req, res) => {
         report.trip = null;
       }
     }
-
-    // Apply search filter on populated data
-    if (search) {
-      const searchLower = search.toLowerCase();
-      allReports = allReports.filter(report => {
-        const reporterName = report.reporter?.name?.toLowerCase() || '';
-        const driverName = report.driver?.name?.toLowerCase() || '';
-        const plateNumber = report.vehicle?.plateNumber?.toLowerCase() || '';
-        const vinNumber = report.vehicle?.vinNumber?.toLowerCase() || '';
-        const unitNo = report.vehicle?.unitNo?.toLowerCase() || report.unit?.unitNo?.toLowerCase() || '';
-        const statusStr = report.status?.toLowerCase() || '';
-        const tripNumber = report.trip?.tripNumber?.toLowerCase() || '';
-        const tripStatus = report.trip?.status?.toLowerCase() || '';
-        const transactionNumber = report.transactionNumber?.toLowerCase() || '';
-        const city = (report.city || report.cityLocation || '').toLowerCase();
-        const state = (report.state || '').toLowerCase();
-        const paymentNotes = (report.paymentNotes || '').toLowerCase();
-        const product = (report.product || report.type || '').toLowerCase();
-        const fuelVendor = (report.fuelVendor || '').toLowerCase();
-        
-        return reporterName.includes(searchLower) ||
-               driverName.includes(searchLower) ||
-               plateNumber.includes(searchLower) ||
-               vinNumber.includes(searchLower) ||
-               unitNo.includes(searchLower) ||
-               statusStr.includes(searchLower) ||
-               tripNumber.includes(searchLower) ||
-               tripStatus.includes(searchLower) ||
-               transactionNumber.includes(searchLower) ||
-               city.includes(searchLower) ||
-               state.includes(searchLower) ||
-               paymentNotes.includes(searchLower) ||
-               product.includes(searchLower) ||
-               fuelVendor.includes(searchLower);
-      });
-    }
-
-    // Get total count after search filtering
-    const total = allReports.length;
-
-    // Apply pagination
-    const reports = allReports.slice(skip, skip + parseInt(limit));
 
     return res.status(200).json({ 
       success: true, 
