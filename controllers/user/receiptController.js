@@ -63,6 +63,22 @@ export const createReceipt = async (req, res) => {
       company: isSuperadmin ? req.body.company || null : companyId
     };
 
+    // Same receipt sent twice (Upload clicked again while the file was still uploading):
+    // return the one already saved instead of adding a copy (client 19 Nov: "added one
+    // receipt, it shows twice")
+    const recentCopy = await Receipt.findOne({
+      company: payload.company,
+      uploadedBy: payload.uploadedBy,
+      amount: payload.amount,
+      payeeVendor: payload.payeeVendor,
+      date: payload.date,
+      fileName: payload.fileName,
+      createdAt: { $gte: new Date(Date.now() - 2 * 60 * 1000) },
+    }).populate('uploadedBy', 'name email');
+    if (recentCopy) {
+      return res.json({ success: true, message: "Receipt already saved", data: recentCopy, duplicate: true });
+    }
+
     const receipt = new Receipt(payload);
     await receipt.save();
     

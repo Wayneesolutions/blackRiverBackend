@@ -2,7 +2,7 @@ import { Paystub } from "../../models/hr/paystubModel.js";
 import { Payroll } from "../../models/hr/payrollSchemaModel.js";
 import { getUserCompanyId } from "../../utils/companyFilter.js";
 import { CompanySettings } from "../../models/driver/companysettingsModel.js";
-import { DeductionAddition } from "../../models/hr/settlementModel.js";
+import { DeductionAddition, Settlement } from "../../models/hr/settlementModel.js";
 
 // ✅ Get all paystubs
 
@@ -187,6 +187,60 @@ export const getPaystubs = async (req, res) => {
       .populate('company', 'name')
       .sort({ 'payPeriod.payDate': -1 })
       .lean();
+
+    // Owner-operator settlements (Accounts > Settlements, incl. "Settle by Truck") are paid
+    // to O/Os but are not payrolls, so they never had a paystub and the Owner Operators tab
+    // always said 0 (client 19 Nov). List them here as O/O pay statements.
+    if (!workType || workType === 'Owner-Operator') {
+      try {
+        const stFilter = { status: { $ne: 'Cancelled' } };
+        if (!isSuperadmin) stFilter.company = companyId;
+        if (userId) stFilter.driver = userId;
+        if (filter['payPeriod.payDate']) stFilter['payPeriod.endDate'] = filter['payPeriod.payDate'];
+        const settlements = await Settlement.find(stFilter)
+          .populate('driver', 'name email role internalId companyFlag details')
+          .populate('truck', 'internalId unitNumber plateNumber')
+          .sort({ 'payPeriod.endDate': -1 })
+          .lean();
+        const isOO = (u) => !!(u && (u.details?.companyFlag ?? u.companyFlag));
+        const rows = settlements
+          // Truck settlements are always O/O pay; driver settlements only when the payee is an O/O
+          .filter(st => st.settlementType === 'truck' || st.truck || isOO(st.driver))
+          .map(st => {
+            const d = st.driver || null;
+            const truckNo = st.truckNumber || st.truck?.internalId || st.truck?.unitNumber || st.truck?.plateNumber || '';
+            const name = st.payeeName || d?.name || (truckNo ? `Truck ${truckNo}` : 'Owner-Operator');
+            const deductions = r2(st.deductions);
+            return {
+              _id: st._id,
+              source: 'settlement',
+              settlementId: st.settlementId,
+              userId: { _id: d?._id || null, name, email: d?.email, role: 'driver', internalId: d?.internalId, companyFlag: true, details: { companyFlag: true } },
+              employeeName: name,
+              employeeId: d?.internalId || truckNo,
+              employeeEmail: d?.email || '',
+              employeeRole: 'driver',
+              workType: 'Owner-Operator',
+              truckNumber: truckNo,
+              payPeriod: {
+                startDate: st.payPeriod?.startDate,
+                endDate: st.payPeriod?.endDate,
+                payDate: st.paymentDate || st.payPeriod?.endDate,
+              },
+              paystubId: st.settlementId,
+              summary: { grossPay: r2(st.grossPay), totalDeductions: deductions, totalTaxes: 0, netPay: r2(st.netPay) },
+              status: st.status === 'Paid' ? 'issued' : 'draft',
+              settlementStatus: st.status,
+              createdAt: st.createdAt,
+            };
+          });
+        paystubs = [...paystubs, ...rows].sort(
+          (a, b) => new Date(b.payPeriod?.payDate || 0) - new Date(a.payPeriod?.payDate || 0)
+        );
+      } catch (err) {
+        console.error('Could not list owner-operator settlements in Gross Payroll:', err.message);
+      }
+    }
 
     // Apply search filter if provided
     if (search) {

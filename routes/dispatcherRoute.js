@@ -227,91 +227,96 @@ dispatcherRoute.get(
 )
 
 // fuel
+// One role list for every Fuel Reports call. The lists had drifted apart: Accounts could
+// open and add reports but got 403 on edit/delete/status and on adding a fuel type, unit or
+// vendor; Dispatch could edit but not even list them (client 19 Nov: "fuel section still
+// doesn't work").
+const FUEL_ROLES = ['admin', 'superadmin', 'dispatcher', 'accountant', 'hr', 'Fleet Maintenance Manager', 'Compliance Manager'];
 dispatcherRoute.post(
   '/fuel-report',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   createFuelReport
 )
 dispatcherRoute.get(
   '/fuel-report/',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   getFuelReports
 )
 dispatcherRoute.get(
   '/fuel-report/reporters',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Compliance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   getReporters
 )
 
 dispatcherRoute.get(
   '/fuel-types',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   getFuelTypes
 )
 
 dispatcherRoute.post(
   '/fuel-types',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   createFuelType
 )
 
 dispatcherRoute.get(
   '/units',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   getUnits
 )
 
 dispatcherRoute.post(
   '/units',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   createUnit
 )
 
 dispatcherRoute.get(
   '/fuel-vendors',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   getFuelVendors
 )
 
 dispatcherRoute.post(
   '/fuel-vendors',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'Fleet Maintenance Manager', 'Compliance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   createFuelVendor
 )
 
 dispatcherRoute.put(
   '/fuel-report/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'dispatcher', 'hr', 'Fleet Maintenance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   updateFuelReport
 )
 
 dispatcherRoute.delete(
   '/fuel-report/:id',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   deleteFuelReport
 )
 dispatcherRoute.patch(
   '/fuel-report/:id/status',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager'),
+  authorizeRoles(...FUEL_ROLES),
   changeFuelReportStatus
 )
 
 dispatcherRoute.post(
   '/fuel-report/extract-receipt',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   FileUploadMemory.single('receipt'),
   extractFuelReceipt
 )
@@ -319,7 +324,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/parse-csv',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   CsvUploadMemory.single('csv'),
   parseCsvHeaders
 )
@@ -327,7 +332,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/import-csv',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   CsvUploadMemory.single('csv'),
   importFuelReportsFromCsv
 )
@@ -335,7 +340,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/parse-fuel-card',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   FileUploadMemory.single('pdf'),
   parseFuelCardPdf
 )
@@ -343,7 +348,7 @@ dispatcherRoute.post(
 dispatcherRoute.post(
   '/fuel-report/confirm-fuel-card',
   authMiddleware,
-  authorizeRoles('admin', 'superadmin', 'Fleet Maintenance Manager', 'Compliance Manager', 'accountant'),
+  authorizeRoles(...FUEL_ROLES),
   confirmFuelCardImport
 )
 

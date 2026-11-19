@@ -323,7 +323,11 @@ export const syncBrokeredLoadBill = async (order, userId = null) => {
     if (!order?._id || !order.company) return null;
     const existing = await Bill.findOne({ order: order._id, source: 'brokered_load' });
     const rate = r2(order.carrierRate);
-    const wantsBill = !!order.bookedForCarrier && rate > 0 && (order.carrierName || order.carrier);
+    // A load booked to a carrier always gets a payable, even before the carrier rate is
+    // typed in: it shows in Accounts Payable at $0 with a note, and Accounts enters the
+    // amount there (client 19 Nov: "I manually add carrier and mark it delivered, it
+    // doesn't show in Accounts Payable" - the rate was left at 0.00).
+    const wantsBill = !!order.bookedForCarrier && !!(order.carrierName || order.carrier);
 
     if (!wantsBill) {
       if (existing && (existing.payments || []).length === 0 && existing.status !== 'void') {
@@ -351,9 +355,18 @@ export const syncBrokeredLoadBill = async (order, userId = null) => {
       amount: rate,
       currency: order.carrierCurrency || order.rateCurrency || 'CAD',
     };
+    const missingRateNote = 'Carrier rate not entered on the load - enter the amount';
+    if (rate <= 0) fields.notes = missingRateNote;
 
     if (existing) {
       if ((existing.payments || []).length > 0) return existing; // paid / partly paid: leave as is
+      // No rate on the load but Accounts already typed the amount on the bill: keep theirs
+      if (rate <= 0 && Number(existing.amount) > 0) {
+        delete fields.amount;
+        delete fields.notes;
+      } else if (rate > 0 && existing.notes === missingRateNote) {
+        fields.notes = '';
+      }
       Object.assign(existing, fields);
       if (existing.status === 'void') existing.status = 'unpaid';
       existing.recalculate();
