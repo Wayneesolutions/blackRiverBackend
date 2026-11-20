@@ -1,7 +1,7 @@
 import { User } from "../models/driver/userModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { parseImportFile, mapRow } from "../utils/importParser.js";
-import { ensureCarrierVendor, backfillCarrierCustomers, CUSTOMER_CATEGORIES } from "../utils/carrierDirectory.js";
+import { ensureCarrierVendor, backfillCarrierCustomers, backfillCustomsBrokerCustomers, CUSTOMER_CATEGORIES } from "../utils/carrierDirectory.js";
 
 // Create Customer
 export const createCustomer = async (req, res) => {
@@ -375,6 +375,10 @@ export const listCustomers = async (req, res) => {
     // Carriers added from the order form (vendors only) appear here too
     if (userCompanyId && (!type || type === 'All' || type === 'Carrier')) {
       await backfillCarrierCustomers(userCompanyId);
+    }
+    // Customs brokers typed on orders appear in the Customs Broker list too
+    if (userCompanyId && (!type || type === 'All' || type === 'Customs Broker')) {
+      await backfillCustomsBrokerCustomers(userCompanyId);
     }
 
     // Build sort

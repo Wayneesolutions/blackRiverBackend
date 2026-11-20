@@ -9,6 +9,7 @@ import ActivityLog from "../models/activitylogModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { PAYROLL_ORDER_STATUSES } from "../utils/payrollItems.js";
 import { syncBrokeredLoadBill } from "./hr/billController.js";
+import { syncOrderCustomsBroker } from "../utils/carrierDirectory.js";
 import { getCombinedFilter } from "../utils/trialDataFilter.js";
 import Place from "../models/driver/placeModel.js";
 import { validateDocuments } from "../services/documentValidationService.js";
@@ -842,6 +843,8 @@ export const createOrder = async (req, res) => {
 
     const order = new Order(orderData);
     await order.save();
+    // Customs broker typed on the order -> Customs Broker list (Customer page + order-form picker)
+    await syncOrderCustomsBroker(order, companyId);
 
     // Load sold to another carrier -> payable in Accounts Payable
     if (order.bookedForCarrier) {
@@ -2594,6 +2597,7 @@ export const updateOrder = async (req, res) => {
     try {
       await order.save();
       console.log('📋 [ORDER UPDATE] Order saved successfully');
+      await syncOrderCustomsBroker(order, getUserCompanyId(req.user));
     } catch (saveError) {
       console.error('📋 [ORDER UPDATE] Error saving order:', saveError);
       throw saveError;
@@ -3501,6 +3505,7 @@ export const createBulkOrders = async (req, res) => {
 
         const order = new Order(orderObj);
         await order.save();
+        await syncOrderCustomsBroker(order, companyId);
 
         // Populate references
         await order.populate({
