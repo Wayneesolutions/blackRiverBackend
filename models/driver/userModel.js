@@ -248,7 +248,9 @@ const userSchema = new mongoose.Schema({
   // Customer Specific Details (used by dispatch customer UI)
   customerDetails: {
     // Customer type
-    customerType: { type: String, enum: ['Customer', 'Shipper-Receiver'], default: 'Customer' },
+    // Category on the Customer page (client 19 Nov: customs brokers, receivers, shippers,
+    // customers, brokers, vendors, others; carriers too). 'Shipper-Receiver' kept for old records.
+    customerType: { type: String, enum: ['Customer', 'Shipper', 'Receiver', 'Shipper-Receiver', 'Broker', 'Customs Broker', 'Carrier', 'Vendor', 'Other'], default: 'Customer' },
     
     // Basic identifiers & emails
     customerId: { type: String },              // mirrors customerId field from UI

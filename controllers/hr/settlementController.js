@@ -132,7 +132,9 @@ export const getTruckWork = async (req, res) => {
 
     // Loads already in another settlement are flagged so they are not paid twice
     const settled = orders.length
-      ? await Settlement.find({ 'lineItems.order': { $in: orders.map(o => o._id) } }).select('settlementId lineItems.order').lean()
+      // A cancelled settlement no longer holds its loads (they stayed greyed out and could not
+      // be ticked again - client 19 Nov: "not able to click on any load")
+      ? await Settlement.find({ 'lineItems.order': { $in: orders.map(o => o._id) }, status: { $ne: 'Cancelled' } }).select('settlementId lineItems.order').lean()
       : [];
     const settledMap = new Map();
     settled.forEach(st => (st.lineItems || []).forEach(li => li.order && settledMap.set(String(li.order), st.settlementId)));
@@ -272,7 +274,7 @@ export const createSettlement = async (req, res) => {
       // Stop paying the same load twice
       const orderIds = lineItems.map(l => l.order).filter(Boolean);
       if (orderIds.length) {
-        const dup = await Settlement.findOne({ company: companyId, 'lineItems.order': { $in: orderIds } }).select('settlementId').lean();
+        const dup = await Settlement.findOne({ company: companyId, 'lineItems.order': { $in: orderIds }, status: { $ne: 'Cancelled' } }).select('settlementId').lean();
         if (dup) {
           return res.status(409).json({ success: false, message: `Some of these loads are already in settlement ${dup.settlementId}. Untick them and try again.` });
         }

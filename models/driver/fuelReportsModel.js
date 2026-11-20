@@ -31,6 +31,13 @@ const fuelReportSchema = new mongoose.Schema({
     type:{type:String},
     location:{address:{type:String},longitude:{type:String},latitude:{type:String}},
     status:{type:String,enum:['approved','pending','rejected'],default:'pending'},
+    // Receipt / documents attached to the report (S3 URL; served through signed links)
+    attachments:[{
+        name:{type:String},
+        url:{type:String},
+        mimeType:{type:String},
+        uploadedAt:{type:Date,default:Date.now}
+    }],
     company:{type:mongoose.Types.ObjectId,ref:"CompanySettings",index:true}
 }, { timestamps: true });
 

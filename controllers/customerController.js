@@ -1,6 +1,7 @@
 import { User } from "../models/driver/userModel.js";
 import { getUserCompanyId } from "../utils/companyFilter.js";
 import { parseImportFile, mapRow } from "../utils/importParser.js";
+import { ensureCarrierVendor, backfillCarrierCustomers, CUSTOMER_CATEGORIES } from "../utils/carrierDirectory.js";
 
 // Create Customer
 export const createCustomer = async (req, res) => {
@@ -82,7 +83,7 @@ export const createCustomer = async (req, res) => {
       role: 'customer',
       ...(companyId && { company: companyId }),
       customerDetails: {
-        customerType: customerType || 'Customer',
+        customerType: CUSTOMER_CATEGORIES.includes(customerType) ? customerType : 'Customer',
         customerId: customerId || baseInternalId || undefined,
         emailPrimary: emailPrimary || baseEmail || undefined,
         emailSecondary: emailSecondary || undefined,
@@ -111,6 +112,10 @@ export const createCustomer = async (req, res) => {
     });
 
     const savedCustomer = await customerDoc.save();
+    // A carrier added here is also offered in the order form's carrier picker / Accounts Payable
+    if (customerType === 'Carrier') {
+      await ensureCarrierVendor({ companyId: companyId || savedCustomer.company, name: baseName, phone: basePhone, email: baseEmail, address });
+    }
     res.status(201).json({ success: true, message: "Customer created successfully", data: savedCustomer });
   } catch (err) {
     console.error("Error creating customer:", err);
@@ -204,7 +209,7 @@ export const updateCustomer = async (req, res) => {
 
     // Customer specific details (nested)
     const customerDetailsUpdate = {};
-    if (customerType !== undefined) customerDetailsUpdate.customerType = customerType;
+    if (customerType !== undefined && CUSTOMER_CATEGORIES.includes(customerType)) customerDetailsUpdate.customerType = customerType;
     if (customerId !== undefined || internalId !== undefined) {
       customerDetailsUpdate.customerId = customerId || internalId;
     }
@@ -257,6 +262,15 @@ export const updateCustomer = async (req, res) => {
       { new: true, runValidators: true }
     );
 
+    if (updatedCustomer?.customerDetails?.customerType === 'Carrier') {
+      await ensureCarrierVendor({
+        companyId: updatedCustomer.company || companyId,
+        name: updatedCustomer.name,
+        phone: updatedCustomer.customerDetails?.phonePrimary || updatedCustomer.phone,
+        email: updatedCustomer.customerDetails?.emailPrimary || updatedCustomer.email,
+        address: updatedCustomer.customerDetails?.address,
+      });
+    }
     res.status(200).json({ success: true, data: updatedCustomer, message: "Customer updated successfully" });
   } catch (err) {
     console.error("Error updating customer:", err);
@@ -347,9 +361,20 @@ export const listCustomers = async (req, res) => {
       query.status = status.toLowerCase();
     }
 
-    // Type filter (Customer vs Shipper-Receiver)
+    // Category filter. Old "Shipper-Receiver" records show under Shipper and Receiver;
+    // records saved before categories existed count as Customer.
     if (type && type !== 'All') {
-      query['customerDetails.customerType'] = type;
+      if (type === 'Shipper' || type === 'Receiver') {
+        query['customerDetails.customerType'] = { $in: [type, 'Shipper-Receiver'] };
+      } else if (type === 'Customer') {
+        query['customerDetails.customerType'] = { $in: ['Customer', null] };
+      } else {
+        query['customerDetails.customerType'] = type;
+      }
+    }
+    // Carriers added from the order form (vendors only) appear here too
+    if (userCompanyId && (!type || type === 'All' || type === 'Carrier')) {
+      await backfillCarrierCustomers(userCompanyId);
     }
 
     // Build sort
@@ -465,7 +490,10 @@ export const importCustomers = async (req, res) => {
       const phone = (row.phone || '').trim();
       const emailSecondary = (row.email_secondary || '').trim() || undefined;
       const phoneSecondary = (row.phone_secondary || '').trim() || undefined;
-      const customerType = row.customer_type || 'Customer';
+      // Category from the file, matched loosely ("customs broker", "SHIPPER" ...); unknown -> Customer
+      const rawType = String(row.customer_type || '').trim().toLowerCase().replace(/[\s_&/]+/g, ' ');
+      const customerType = CUSTOMER_CATEGORIES.find(c => c.toLowerCase().replace(/[-\s]+/g, ' ') === rawType.replace(/-/g, ' '))
+        || (rawType === 'shipper receiver' || rawType === 'shipper and receiver' ? 'Shipper-Receiver' : 'Customer');
       const address = (row.address || '').trim() || undefined;
       const city = (row.city || '').trim() || undefined;
       const state = (row.state || '').trim() || undefined;

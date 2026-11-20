@@ -122,7 +122,10 @@ import {
   parseCsvHeaders,
   importFuelReportsFromCsv,
   parseFuelCardPdf,
-  confirmFuelCardImport
+  confirmFuelCardImport,
+  uploadFuelReportAttachments,
+  getFuelReportAttachments,
+  deleteFuelReportAttachment
 } from '../controllers/fuelReportsController.js'
 import {
   createOrder,
@@ -298,6 +301,26 @@ dispatcherRoute.put(
   authMiddleware,
   authorizeRoles(...FUEL_ROLES),
   updateFuelReport
+)
+
+dispatcherRoute.post(
+  '/fuel-report/:id/attachments',
+  authMiddleware,
+  authorizeRoles(...FUEL_ROLES),
+  FileUpload.array('files', 10),
+  uploadFuelReportAttachments
+)
+dispatcherRoute.get(
+  '/fuel-report/:id/attachments',
+  authMiddleware,
+  authorizeRoles(...FUEL_ROLES),
+  getFuelReportAttachments
+)
+dispatcherRoute.delete(
+  '/fuel-report/:id/attachments/:attachmentId',
+  authMiddleware,
+  authorizeRoles(...FUEL_ROLES),
+  deleteFuelReportAttachment
 )
 
 dispatcherRoute.delete(
